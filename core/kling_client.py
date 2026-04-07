@@ -103,7 +103,7 @@ def create_image_to_video_task(
     payload = {
         "model_name": model,
         "image": img_b64,
-        "prompt": prompt.strip() if prompt and prompt.strip() else "",
+        "prompt": prompt.strip() if prompt else "",
         "duration": str(duration),
         "aspect_ratio": aspect_ratio,
         "mode": mode,

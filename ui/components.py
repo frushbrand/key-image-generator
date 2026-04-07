@@ -166,7 +166,7 @@ def build_generate_video_fn(gallery_state: GalleryState):
                 image=pil_image,
                 prompt=prompt or "",
                 model=api_model,
-                duration=int(duration),
+                duration=duration,
                 aspect_ratio=aspect_ratio,
                 mode=mode,
             )
