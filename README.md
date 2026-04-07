@@ -98,7 +98,7 @@ key-image-generator/
 
 ## ⚠️ 주의사항
 
-- Imagen 3(나노 바나나 프로)는 Vertex AI 또는 Gemini API 접근 권한이 필요합니다.
+- Gemini 3 Pro(나노 바나나 프로)는 Preview 모델로 접근 권한이 필요할 수 있습니다.
 - API 요청 한도(quota)에 따라 생성이 제한될 수 있습니다.
 - 생성된 이미지는 로컬에만 저장되며, 외부로 전송되지 않습니다.
 
@@ -108,5 +108,5 @@ key-image-generator/
 
 | 이름 | API 모델명 | 특징 |
 |------|-----------|------|
-| 나노 바나나 2 | `gemini-2.0-flash-preview-image-generation` | 빠른 생성, 레퍼런스 이미지 지원 |
-| 나노 바나나 프로 | `imagen-3.0-generate-002` | 고품질, 포토리얼리스틱 |
+| 나노 바나나 2 | `gemini-flash-3.1-preview` | Gemini 3.1 Flash Image Preview, 빠른 생성, 레퍼런스 이미지 지원 |
+| 나노 바나나 프로 | `gemini-3.0-pro` | Gemini 3 Pro 이미지 모델, 고품질, 레퍼런스 이미지 지원 |

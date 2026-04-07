@@ -1,6 +1,6 @@
 """
 Gemini API 클라이언트 모듈
-나노 바나나 2 (Gemini 2.0 Flash Image) 및 나노 바나나 프로 (Imagen 3) 모델을 지원합니다.
+나노 바나나 2 (Gemini 3.1 Flash Image Preview) 및 나노 바나나 프로 (Gemini 3 Pro 이미지 모델)를 지원합니다.
 """
 
 import base64
@@ -59,7 +59,7 @@ def generate_with_nano_banana_2(
     reference_images: Optional[list[Image.Image]] = None,
 ) -> Image.Image:
     """
-    나노 바나나 2 (Gemini 2.0 Flash Image Generation) 모델로 이미지를 생성합니다.
+    나노 바나나 2 (Gemini 3.1 Flash Image Preview) 모델로 이미지를 생성합니다.
     레퍼런스 이미지를 지원합니다.
     """
     configure_api(api_key)
@@ -116,38 +116,56 @@ def generate_with_nano_banana_pro(
     prompt: str,
     ratio: str,
     quality: str,
+    reference_images: Optional[list[Image.Image]] = None,
 ) -> Image.Image:
     """
-    나노 바나나 프로 (Imagen 3) 모델로 이미지를 생성합니다.
+    나노 바나나 프로 (Gemini 3 Pro 이미지 모델)로 이미지를 생성합니다.
+    레퍼런스 이미지를 지원합니다.
     """
     configure_api(api_key)
 
     ratio_cfg = ASPECT_RATIOS[ratio]
-    imagen_ratio = ratio_cfg["imagen_ratio"]
+    quality_cfg = QUALITY_OPTIONS[quality]
+    width = int(ratio_cfg["width"] * quality_cfg["width_multiplier"])
+    height = int(ratio_cfg["height"] * quality_cfg["width_multiplier"])
 
-    imagen = genai.ImageGenerationModel(MODELS["나노 바나나 프로"]["api_name"])
-    result = imagen.generate_images(
-        prompt=prompt,
-        number_of_images=1,
-        aspect_ratio=imagen_ratio,
-        safety_filter_level="block_only_high",
-        person_generation="allow_adult",
+    full_prompt = (
+        f"{prompt}\n\n"
+        f"Image should be {width}x{height} pixels, aspect ratio {ratio}."
     )
 
-    if not result.images:
-        raise ValueError("모델이 이미지를 반환하지 않았습니다.")
+    parts = []
 
-    img_bytes = result.images[0]._image_bytes
-    image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    if reference_images:
+        parts.append("Reference images are provided below. Use them as style/composition reference:\n")
+        for img in reference_images:
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            buf.seek(0)
+            parts.append(
+                types.Part.from_bytes(data=buf.getvalue(), mime_type="image/png")
+            )
+        parts.append("\nNow generate the requested image:\n")
 
-    quality_cfg = QUALITY_OPTIONS[quality]
-    if quality_cfg["width_multiplier"] != 1.0:
-        w, h = image.size
-        new_w = int(w * quality_cfg["width_multiplier"])
-        new_h = int(h * quality_cfg["width_multiplier"])
-        image = image.resize((new_w, new_h), Image.LANCZOS)
+    parts.append(full_prompt)
 
-    return image
+    model = genai.GenerativeModel(
+        model_name=MODELS["나노 바나나 프로"]["api_name"],
+        generation_config=types.GenerationConfig(
+            response_modalities=["IMAGE", "TEXT"],
+        ),
+    )
+
+    response = model.generate_content(parts)
+
+    for part in response.parts:
+        if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+            img_bytes = part.inline_data.data
+            if isinstance(img_bytes, str):
+                img_bytes = base64.b64decode(img_bytes)
+            return Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+    raise ValueError("모델이 이미지를 반환하지 않았습니다. 프롬프트를 수정하거나 다시 시도해주세요.")
 
 
 def generate_single_image(
@@ -167,7 +185,9 @@ def generate_single_image(
                     api_key, prompt, ratio, quality, reference_images
                 )
             elif model_name == "나노 바나나 프로":
-                return generate_with_nano_banana_pro(api_key, prompt, ratio, quality)
+                return generate_with_nano_banana_pro(
+                    api_key, prompt, ratio, quality, reference_images
+                )
             else:
                 raise ValueError(f"알 수 없는 모델: {model_name}")
         except Exception as e:

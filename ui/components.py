@@ -273,7 +273,7 @@ def build_ui() -> gr.Blocks:
                         )
 
                         ref_image_upload = gr.File(
-                            label=f"레퍼런스 이미지 (최대 {MAX_REFERENCE_IMAGES}장, 나노 바나나 2만 지원)",
+                            label=f"레퍼런스 이미지 (최대 {MAX_REFERENCE_IMAGES}장)",
                             file_count="multiple",
                             file_types=["image"],
                         )
@@ -393,7 +393,7 @@ def build_ui() -> gr.Blocks:
             """
             ---
             **안내**: 생성된 이미지는 `outputs/YYYY-MM-DD/` 폴더에 자동 저장됩니다.
-            나노 바나나 프로(Imagen 3)는 레퍼런스 이미지를 지원하지 않습니다.
+            나노 바나나 2와 나노 바나나 프로 모두 레퍼런스 이미지를 지원합니다.
             """
         )
 
