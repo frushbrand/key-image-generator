@@ -30,7 +30,7 @@ except (ImportError, ModuleNotFoundError) as e:
 
 
 def main():
-    # GitHub Codespaces에서는 브라우저 자동 열기 불필요 (포트 포워딩으로 자동 접속)
+    # Skip auto-opening browser in GitHub Codespaces (port forwarding handles access)
     in_codespaces = os.environ.get("CODESPACES") == "true"
 
     demo = build_ui()
