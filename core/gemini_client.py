@@ -32,8 +32,8 @@ def validate_api_key(api_key: str) -> tuple[bool, str]:
         return False, "API 키를 입력해주세요."
     try:
         configure_api(api_key.strip())
-        # 간단한 호출로 키 유효성 확인
-        client = genai.GenerativeModel("gemini-2.0-flash")
+        # 간단한 호출로 키 유효성 확인 (안정적으로 사용 가능한 텍스트 모델 사용)
+        client = genai.GenerativeModel("gemini-1.5-flash")
         client.generate_content("test")
         return True, "✅ API 키가 유효합니다."
     except Exception as e:
