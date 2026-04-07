@@ -28,7 +28,48 @@ Google Gemini API와 Kling AI API를 활용한 로컬 실행형 키 이미지 + 
 - Google Gemini API 키 ([AI Studio에서 발급](https://aistudio.google.com/app/apikey))
 - Kling AI API 키 ([Kling 개발자 콘솔에서 발급](https://kling.ai/dev/api-key)) ← 영상 생성 기능 사용 시
 
-### 설치 및 실행
+---
+
+### 🟢 방법 1 — 원클릭 설치 스크립트 (비개발자 권장)
+
+Python만 설치되어 있으면 스크립트 하나로 자동 설치 후 실행됩니다.
+
+#### Windows
+1. [Python 3.10+](https://www.python.org/downloads/) 설치 (설치 시 **"Add Python to PATH"** 옵션 반드시 체크)
+2. 이 저장소를 [ZIP으로 다운로드](https://github.com/frushbrand/key-image-generator/archive/refs/heads/main.zip) 후 압축 해제
+3. 압축 해제된 폴더에서 **`setup.bat`** 파일을 **더블클릭**
+4. 브라우저가 자동으로 열리며 **http://localhost:7860** 접속
+
+#### macOS / Linux
+```bash
+# 저장소 클론 후
+chmod +x setup.sh
+./setup.sh
+```
+
+> 이후 실행 시에도 같은 스크립트를 실행하면 됩니다. (패키지 재설치 없이 빠르게 시작)
+
+---
+
+### 🐳 방법 2 — Docker (환경 문제 없이 가장 안정적)
+
+[Docker Desktop](https://www.docker.com/products/docker-desktop/) 설치 후:
+
+```bash
+# 저장소 클론
+git clone https://github.com/frushbrand/key-image-generator.git
+cd key-image-generator
+
+# 실행 (최초 1회 빌드 후 바로 시작)
+docker compose up --build
+```
+
+브라우저에서 **http://localhost:7860** 접속  
+종료: `Ctrl+C` / 이후 재실행: `docker compose up`
+
+---
+
+### ⚙️ 방법 3 — 직접 설치 (개발자용)
 
 > **명령어 입력 위치**: macOS/Linux는 **터미널**, Windows는 **명령 프롬프트(cmd)** 또는 **PowerShell**을 열고 아래 명령을 순서대로 입력하면 됩니다.
 
