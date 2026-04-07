@@ -235,7 +235,7 @@ def build_generate_fn(gallery_state: GalleryState):
         # 레퍼런스 이미지 로드
         ref_pil_images: list[Image.Image] = []
         if ref_images:
-            paths = [r if isinstance(r, str) else r.name for r in ref_images if r is not None]
+            paths = [r if isinstance(r, str) else r.path for r in ref_images if r is not None]
             ref_pil_images = load_reference_images(paths[:MAX_REFERENCE_IMAGES])
 
         completed = [0]
@@ -500,7 +500,7 @@ def build_ui() -> gr.Blocks:
                         return gr.Gallery(visible=False, value=[])
                     imgs = []
                     for f in files:
-                        p = f if isinstance(f, str) else f.name
+                        p = f if isinstance(f, str) else f.path
                         imgs.append(p)
                     return gr.Gallery(visible=True, value=imgs)
 
