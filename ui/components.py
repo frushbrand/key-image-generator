@@ -364,9 +364,9 @@ def build_ui() -> gr.Blocks:
         }
 
         document.addEventListener('click', function(e) {
-            var buttons = getTabButtons();
             var btn = e.target.closest('[role="tab"]') || e.target.closest('.tab-nav button');
             if (btn) {
+                var buttons = getTabButtons();
                 var idx = buttons.indexOf(btn);
                 if (idx >= 0) saveTab(idx);
             }

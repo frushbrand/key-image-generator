@@ -96,6 +96,8 @@ def generate_with_nano_banana_2(
     )
 
     # 응답에서 이미지 추출
+    if not response.candidates:
+        raise ValueError("모델이 응답을 반환하지 않았습니다. 프롬프트를 수정하거나 다시 시도해주세요.")
     for part in response.candidates[0].content.parts:
         if part.inline_data and part.inline_data.mime_type.startswith("image/"):
             img_bytes = part.inline_data.data
@@ -149,6 +151,8 @@ def generate_with_nano_banana_pro(
         ),
     )
 
+    if not response.candidates:
+        raise ValueError("모델이 응답을 반환하지 않았습니다. 프롬프트를 수정하거나 다시 시도해주세요.")
     for part in response.candidates[0].content.parts:
         if part.inline_data and part.inline_data.mime_type.startswith("image/"):
             img_bytes = part.inline_data.data
