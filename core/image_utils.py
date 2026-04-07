@@ -116,6 +116,34 @@ def image_to_bytes(image: Image.Image, fmt: str = "PNG") -> bytes:
     return buf.getvalue()
 
 
+def save_video(video_bytes: bytes, model_name: str, prompt: str) -> str:
+    """
+    영상 바이트 데이터를 outputs/YYYY-MM-DD/ 경로에 저장하고 파일 경로를 반환합니다.
+    """
+    out_dir = get_output_dir()
+    timestamp = datetime.now().strftime("%H%M%S_%f")[:13]
+    # 경로 구분자 및 특수 문자 제거하여 안전한 파일명 생성
+    safe_model = "".join(c if c.isalnum() or c in "-_" else "_" for c in model_name)
+    filename = f"{timestamp}_{safe_model}_video.mp4"
+    video_path = out_dir / filename
+
+    with open(video_path, "wb") as f:
+        f.write(video_bytes)
+
+    meta_filename = f"{timestamp}_{safe_model}_video.json"
+    meta_path = out_dir / meta_filename
+    metadata = {
+        "timestamp": datetime.now().isoformat(),
+        "model": model_name,
+        "prompt": prompt,
+        "filename": filename,
+    }
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+    return str(video_path)
+
+
 def load_metadata(meta_path: str) -> dict:
     """메타데이터 JSON 파일을 읽어 반환합니다."""
     try:

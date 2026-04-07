@@ -21,11 +21,24 @@ from config.settings import (
     MAX_COUNT,
     MAX_REFERENCE_IMAGES,
     SETTINGS_FILE,
+    KLING_MODELS,
+    KLING_DURATIONS,
+    KLING_DEFAULT_DURATION,
+    KLING_DEFAULT_MODEL,
+    KLING_VIDEO_RATIOS,
+    KLING_DEFAULT_RATIO,
 )
 from core.gemini_client import validate_api_key, generate_batch_images
+from core.kling_client import (
+    validate_kling_keys,
+    create_image_to_video_task,
+    poll_task_result,
+    download_video,
+)
 from core.image_utils import (
     load_reference_images,
     save_image,
+    save_video,
     create_zip_from_paths,
 )
 from ui.gallery import GalleryState, GalleryItem
@@ -42,13 +55,22 @@ def load_settings() -> dict:
             pass
     # .env 파일 폴백
     env_path = Path(".env")
+    settings: dict = {}
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith("GOOGLE_API_KEY="):
                 key = line.split("=", 1)[1].strip()
                 if key and key != "your_google_api_key_here":
-                    return {"api_key": key}
-    return {}
+                    settings["api_key"] = key
+            elif line.startswith("KLING_ACCESS_KEY="):
+                key = line.split("=", 1)[1].strip()
+                if key and key != "your_kling_access_key_here":
+                    settings["kling_access_key"] = key
+            elif line.startswith("KLING_SECRET_KEY="):
+                key = line.split("=", 1)[1].strip()
+                if key and key != "your_kling_secret_key_here":
+                    settings["kling_secret_key"] = key
+    return settings
 
 
 def save_settings(settings: dict) -> None:
@@ -74,6 +96,116 @@ def on_save_key(api_key: str):
     cfg["api_key"] = api_key.strip()
     save_settings(cfg)
     return "💾 API 키가 저장되었습니다."
+
+
+def on_validate_kling_keys(access_key: str, secret_key: str):
+    ok, msg = validate_kling_keys(access_key, secret_key)
+    if ok:
+        cfg = load_settings()
+        cfg["kling_access_key"] = access_key.strip()
+        cfg["kling_secret_key"] = secret_key.strip()
+        save_settings(cfg)
+    return msg
+
+
+def on_save_kling_keys(access_key: str, secret_key: str):
+    if not access_key or not access_key.strip():
+        return "❌ Access Key를 입력해주세요."
+    if not secret_key or not secret_key.strip():
+        return "❌ Secret Key를 입력해주세요."
+    cfg = load_settings()
+    cfg["kling_access_key"] = access_key.strip()
+    cfg["kling_secret_key"] = secret_key.strip()
+    save_settings(cfg)
+    return "💾 Kling API 키가 저장되었습니다."
+
+
+def build_generate_video_fn(gallery_state: GalleryState):
+    """영상 생성 버튼 클릭 핸들러 팩토리"""
+
+    def generate_video(
+        access_key: str,
+        secret_key: str,
+        ref_image,       # gr.Image → PIL Image or None
+        use_last: bool,  # "마지막 생성 이미지 사용" 체크박스
+        prompt: str,
+        model_label: str,
+        duration: int,
+        aspect_ratio: str,
+        progress=gr.Progress(track_tqdm=True),
+    ):
+        ak = (access_key or "").strip()
+        sk = (secret_key or "").strip()
+        if not ak or not sk:
+            gr.Warning("Kling Access Key와 Secret Key를 입력해주세요.")
+            return None, "❌ API 키 없음"
+
+        # 레퍼런스 이미지 결정
+        pil_image: Optional[Image.Image] = None
+        if use_last and gallery_state.images:
+            pil_image = gallery_state.images[-1]
+        elif ref_image is not None:
+            if isinstance(ref_image, Image.Image):
+                pil_image = ref_image
+            else:
+                pil_image = Image.fromarray(ref_image).convert("RGB")
+
+        if pil_image is None:
+            gr.Warning("레퍼런스 이미지를 업로드하거나 '마지막 생성 이미지 사용'을 선택해주세요.")
+            return None, "❌ 레퍼런스 이미지 없음"
+
+        model_cfg = KLING_MODELS[model_label]
+        api_model = model_cfg["api_name"]
+        mode = model_cfg["mode"]
+
+        progress(0.05, desc="영상 생성 작업 요청 중...")
+        try:
+            task_id = create_image_to_video_task(
+                access_key=ak,
+                secret_key=sk,
+                image=pil_image,
+                prompt=prompt or "",
+                model=api_model,
+                duration=duration,
+                aspect_ratio=aspect_ratio,
+                mode=mode,
+            )
+        except Exception as e:
+            return None, f"❌ 작업 생성 실패: {e}"
+
+        progress(0.15, desc=f"대기 중... (task_id: {task_id[:8]}…)")
+
+        video_url = None
+
+        def on_poll(elapsed, status):
+            frac = min(0.15 + elapsed / 300 * 0.80, 0.95)
+            progress(frac, desc=f"처리 중… {elapsed}초 경과 (상태: {status})")
+
+        try:
+            video_url = poll_task_result(
+                access_key=ak,
+                secret_key=sk,
+                task_id=task_id,
+                timeout=300,
+                poll_interval=5,
+                progress_callback=on_poll,
+            )
+        except TimeoutError as e:
+            return None, f"⏱️ {e}"
+        except Exception as e:
+            return None, f"❌ 생성 실패: {e}"
+
+        progress(0.97, desc="영상 다운로드 중...")
+        try:
+            video_bytes = download_video(video_url)
+        except Exception as e:
+            return None, f"❌ 영상 다운로드 실패: {e}"
+
+        video_path = save_video(video_bytes, model_label, prompt or "")
+        progress(1.0, desc="완료!")
+        return video_path, f"✅ 영상 생성 완료! 저장 위치: {video_path}"
+
+    return generate_video
 
 
 def build_generate_fn(gallery_state: GalleryState):
@@ -187,6 +319,8 @@ def build_ui() -> gr.Blocks:
     gallery_state = GalleryState()
     saved = load_settings()
     saved_api_key = saved.get("api_key", "")
+    saved_kling_access = saved.get("kling_access_key", "")
+    saved_kling_secret = saved.get("kling_secret_key", "")
 
     with gr.Blocks(
         title="🎨 키 이미지 생성 툴",
@@ -201,7 +335,7 @@ def build_ui() -> gr.Blocks:
         gr.HTML(
             """
             <div class="title-text">🎨 AI 영상 키 이미지 생성 툴</div>
-            <div class="subtitle-text">나노 바나나 2 / 나노 바나나 프로 모델로 영상 키 이미지를 생성합니다.</div>
+            <div class="subtitle-text">나노 바나나 2 / 나노 바나나 프로 모델로 영상 키 이미지를 생성하고, Kling AI로 영상을 만들어보세요.</div>
             """
         )
 
@@ -231,6 +365,44 @@ def build_ui() -> gr.Blocks:
 
                 btn_validate.click(on_validate_key, inputs=[api_key_input], outputs=[key_status])
                 btn_save_key.click(on_save_key, inputs=[api_key_input], outputs=[key_status])
+
+                gr.Markdown("---")
+                gr.Markdown(
+                    """
+                    ### Kling AI API 키 설정 (영상 생성용)
+                    [Kling 개발자 콘솔](https://kling.ai/dev/api-key)에서 Access Key와 Secret Key를 발급받으세요.
+                    """
+                )
+                with gr.Row():
+                    kling_access_input = gr.Textbox(
+                        label="Kling Access Key",
+                        placeholder="Access Key...",
+                        value=saved_kling_access,
+                        type="password",
+                        scale=2,
+                    )
+                    kling_secret_input = gr.Textbox(
+                        label="Kling Secret Key",
+                        placeholder="Secret Key...",
+                        value=saved_kling_secret,
+                        type="password",
+                        scale=2,
+                    )
+                with gr.Row():
+                    btn_kling_validate = gr.Button("🔍 키 검증", variant="secondary")
+                    btn_kling_save = gr.Button("💾 저장", variant="primary")
+                kling_key_status = gr.Textbox(label="Kling 키 상태", interactive=False)
+
+                btn_kling_validate.click(
+                    on_validate_kling_keys,
+                    inputs=[kling_access_input, kling_secret_input],
+                    outputs=[kling_key_status],
+                )
+                btn_kling_save.click(
+                    on_save_kling_keys,
+                    inputs=[kling_access_input, kling_secret_input],
+                    outputs=[kling_key_status],
+                )
 
             # ── 탭 2: 이미지 생성 ────────────────────────────────────────────
             with gr.Tab("🖼️ 이미지 생성"):
@@ -354,7 +526,107 @@ def build_ui() -> gr.Blocks:
                     outputs=[live_gallery, gen_status, ref_preview],
                 )
 
-            # ── 탭 3: 갤러리 & 다운로드 ──────────────────────────────────────
+            # ── 탭 3: 영상 생성 (Kling) ──────────────────────────────────────
+            with gr.Tab("🎬 영상 생성 (Kling)"):
+                gr.Markdown(
+                    """
+                    ### 🎬 Kling AI 영상 생성
+                    이미지 생성 탭에서 만든 키 이미지를 레퍼런스로 사용해 영상을 생성합니다.
+                    Kling API 키는 **API 키 설정** 탭에서 저장할 수 있습니다.
+                    """
+                )
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 🔑 Kling API 키")
+                        kling_access_vid = gr.Textbox(
+                            label="Access Key",
+                            placeholder="Access Key...",
+                            value=saved_kling_access,
+                            type="password",
+                        )
+                        kling_secret_vid = gr.Textbox(
+                            label="Secret Key",
+                            placeholder="Secret Key...",
+                            value=saved_kling_secret,
+                            type="password",
+                        )
+
+                        gr.Markdown("#### 🖼️ 레퍼런스 이미지")
+                        use_last_chk = gr.Checkbox(
+                            label="✅ 마지막 생성 이미지 사용",
+                            value=True,
+                            info="이미지 생성 탭에서 가장 최근에 생성한 이미지를 자동으로 사용합니다.",
+                        )
+                        ref_image_vid = gr.Image(
+                            label="또는 이미지를 직접 업로드",
+                            type="pil",
+                            height=220,
+                        )
+
+                    with gr.Column(scale=2):
+                        gr.Markdown("#### ⚙️ 영상 설정")
+
+                        kling_model_radio = gr.Radio(
+                            choices=list(KLING_MODELS.keys()),
+                            value=KLING_DEFAULT_MODEL,
+                            label="Kling 모델",
+                            info=" | ".join(
+                                f"{k}: {v['description']}"
+                                for k, v in KLING_MODELS.items()
+                            ),
+                        )
+
+                        kling_duration_radio = gr.Radio(
+                            choices=KLING_DURATIONS,
+                            value=KLING_DEFAULT_DURATION,
+                            label="영상 길이 (초)",
+                        )
+
+                        kling_ratio_dropdown = gr.Dropdown(
+                            choices=KLING_VIDEO_RATIOS,
+                            value=KLING_DEFAULT_RATIO,
+                            label="화면 비율",
+                        )
+
+                        kling_prompt_input = gr.Textbox(
+                            label="프롬프트 (선택)",
+                            placeholder="영상 움직임을 설명하세요. 예: Camera slowly zooms in, dramatic lighting",
+                            lines=3,
+                        )
+
+                        btn_generate_video = gr.Button(
+                            "🎬 영상 생성",
+                            variant="primary",
+                            elem_classes=["generate-btn"],
+                        )
+
+                        video_status = gr.Textbox(
+                            label="상태",
+                            interactive=False,
+                            value="대기 중",
+                        )
+
+                gr.Markdown("#### 🎥 생성된 영상")
+                video_output = gr.Video(label="생성 결과", height=480)
+
+                generate_video_fn = build_generate_video_fn(gallery_state)
+                btn_generate_video.click(
+                    generate_video_fn,
+                    inputs=[
+                        kling_access_vid,
+                        kling_secret_vid,
+                        ref_image_vid,
+                        use_last_chk,
+                        kling_prompt_input,
+                        kling_model_radio,
+                        kling_duration_radio,
+                        kling_ratio_dropdown,
+                    ],
+                    outputs=[video_output, video_status],
+                )
+
+            # ── 탭 4: 갤러리 & 다운로드 ──────────────────────────────────────
             with gr.Tab("📁 갤러리 & 다운로드"):
                 gr.Markdown("### 생성된 이미지 전체 보기 및 다운로드")
 
@@ -392,8 +664,9 @@ def build_ui() -> gr.Blocks:
         gr.Markdown(
             """
             ---
-            **안내**: 생성된 이미지는 `outputs/YYYY-MM-DD/` 폴더에 자동 저장됩니다.
+            **안내**: 생성된 이미지와 영상은 `outputs/YYYY-MM-DD/` 폴더에 자동 저장됩니다.
             나노 바나나 2와 나노 바나나 프로 모두 레퍼런스 이미지를 지원합니다.
+            Kling 영상 생성은 보통 1~5분 정도 소요됩니다.
             """
         )
 

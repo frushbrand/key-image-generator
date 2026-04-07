@@ -30,7 +30,35 @@ MODELS = {
     },
 }
 
-# 기본값
+# ── Kling 비디오 모델 ──────────────────────────────────────────────────────────
+
+KLING_MODELS = {
+    "Kling 3 Standard": {
+        "api_name": "kling-v3",
+        "description": "Kling v3 Standard (빠름, 범용)",
+        "mode": "standard",
+    },
+    "Kling 3 Pro": {
+        "api_name": "kling-v3-pro",
+        "description": "Kling v3 Pro (고품질, 고해상도)",
+        "mode": "professional",
+    },
+    "Kling 3 Omni": {
+        "api_name": "kling-v3-omni",
+        "description": "Kling v3 Omni (네이티브 오디오, 최고 품질)",
+        "mode": "professional",
+    },
+}
+
+KLING_DURATIONS = [5, 10]
+KLING_DEFAULT_DURATION = 5
+KLING_DEFAULT_MODEL = "Kling 3 Standard"
+
+KLING_VIDEO_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
+KLING_DEFAULT_RATIO = "16:9"
+
+# ── 기본값 ─────────────────────────────────────────────────────────────────────
+
 DEFAULT_MODEL = "나노 바나나 2"
 DEFAULT_RATIO = "16:9"
 DEFAULT_QUALITY = "HD"
