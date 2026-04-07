@@ -30,6 +30,31 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Linux에서 Pillow 컴파일에 필요한 시스템 라이브러리 확인 및 설치
+if [[ "$(uname -s)" == "Linux" ]]; then
+    echo ""
+    echo "🔍 Pillow 컴파일에 필요한 시스템 라이브러리 확인 중..."
+    if command -v apt-get &>/dev/null; then
+        MISSING_PKGS=()
+        for pkg in zlib1g-dev libjpeg-dev libpng-dev libfreetype6-dev; do
+            if ! dpkg -s "$pkg" &>/dev/null; then
+                MISSING_PKGS+=("$pkg")
+            fi
+        done
+        if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
+            echo "📦 누락된 시스템 라이브러리 설치 중: ${MISSING_PKGS[*]}"
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends "${MISSING_PKGS[@]}"
+            echo "✅ 시스템 라이브러리 설치 완료"
+        else
+            echo "✅ 필요한 시스템 라이브러리가 모두 설치되어 있습니다."
+        fi
+    else
+        echo "⚠️ apt-get 을 찾을 수 없습니다. Pillow 빌드에 필요한 다음 패키지를 수동으로 설치해 주세요:"
+        echo "   zlib, libjpeg, libpng, freetype"
+        echo "   (예: sudo yum install zlib-devel libjpeg-devel libpng-devel freetype-devel)"
+    fi
+fi
+
 # 가상환경 생성 (없을 경우에만)
 if [ ! -d "venv" ]; then
     echo ""
