@@ -50,7 +50,7 @@ KLING_MODELS = {
     },
 }
 
-KLING_DURATIONS = list(range(3, 11))  # 3 ~ 10초 (1초 단위)
+KLING_DURATIONS = list(range(3, 16))  # 3 ~ 15초 (1초 단위)
 KLING_DEFAULT_DURATION = 5
 KLING_DEFAULT_MODEL = "Kling 3 Standard"
 

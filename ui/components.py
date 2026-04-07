@@ -656,11 +656,11 @@ def build_ui() -> gr.Blocks:
 
                         kling_duration_slider = gr.Slider(
                             minimum=3,
-                            maximum=10,
+                            maximum=15,
                             value=KLING_DEFAULT_DURATION,
                             step=1,
                             label="영상 길이 (초)",
-                            info="3초부터 10초까지 1초 단위로 선택",
+                            info="3초부터 15초까지 1초 단위로 선택",
                         )
 
                         kling_ratio_dropdown = gr.Dropdown(
