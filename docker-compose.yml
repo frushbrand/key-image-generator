@@ -1,9 +1,0 @@
-services:
-  app:
-    build: .
-    ports:
-      - "7860:7860"
-    volumes:
-      - ./outputs:/app/outputs
-      - ./.app_settings.json:/app/.app_settings.json
-    restart: unless-stopped
