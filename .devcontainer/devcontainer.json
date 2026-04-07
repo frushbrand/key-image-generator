@@ -1,0 +1,21 @@
+{
+  "name": "AI Key Image Generator",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "postCreateCommand": "pip install -r requirements.txt",
+  "postStartCommand": "python app.py",
+  "forwardPorts": [7860],
+  "portsAttributes": {
+    "7860": {
+      "label": "Gradio App",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance"
+      ]
+    }
+  }
+}
