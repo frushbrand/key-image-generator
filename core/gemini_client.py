@@ -9,8 +9,8 @@ import time
 import concurrent.futures
 from typing import Optional
 
-import google.generativeai as genai
-from google.generativeai import types
+from google import genai
+from google.genai import types
 from PIL import Image
 
 from config.settings import (
@@ -21,9 +21,9 @@ from config.settings import (
 )
 
 
-def configure_api(api_key: str) -> None:
-    """Gemini API 키를 설정합니다."""
-    genai.configure(api_key=api_key)
+def _make_client(api_key: str) -> genai.Client:
+    """Gemini API 클라이언트를 생성합니다."""
+    return genai.Client(api_key=api_key)
 
 
 def validate_api_key(api_key: str) -> tuple[bool, str]:
@@ -31,10 +31,9 @@ def validate_api_key(api_key: str) -> tuple[bool, str]:
     if not api_key or not api_key.strip():
         return False, "API 키를 입력해주세요."
     try:
-        configure_api(api_key.strip())
-        # 간단한 호출로 키 유효성 확인 (안정적으로 사용 가능한 텍스트 모델 사용)
-        client = genai.GenerativeModel("gemini-1.5-flash")
-        client.generate_content("test")
+        client = _make_client(api_key.strip())
+        # 모델 목록 조회로 키 유효성 확인 (실제 생성 호출 없이도 가능)
+        client.models.get(model="gemini-2.0-flash")
         return True, "✅ API 키가 유효합니다."
     except Exception as e:
         err = str(e)
@@ -45,10 +44,10 @@ def validate_api_key(api_key: str) -> tuple[bool, str]:
         return False, f"❌ 오류 발생: {err}"
 
 
-def _pil_to_base64(image: Image.Image, fmt: str = "PNG") -> str:
+def _pil_to_bytes(image: Image.Image, fmt: str = "PNG") -> bytes:
     buf = io.BytesIO()
     image.save(buf, format=fmt)
-    return base64.b64encode(buf.getvalue()).decode()
+    return buf.getvalue()
 
 
 def generate_with_nano_banana_2(
@@ -62,7 +61,7 @@ def generate_with_nano_banana_2(
     나노 바나나 2 (Gemini 3.1 Flash Image Preview) 모델로 이미지를 생성합니다.
     레퍼런스 이미지를 지원합니다.
     """
-    configure_api(api_key)
+    client = _make_client(api_key)
 
     ratio_cfg = ASPECT_RATIOS[ratio]
     quality_cfg = QUALITY_OPTIONS[quality]
@@ -75,33 +74,29 @@ def generate_with_nano_banana_2(
         f"Image should be {width}x{height} pixels, aspect ratio {ratio}."
     )
 
-    parts = []
+    contents: list = []
 
     # 레퍼런스 이미지 추가
     if reference_images:
-        parts.append("Reference images are provided below. Use them as style/composition reference:\n")
+        contents.append("Reference images are provided below. Use them as style/composition reference:\n")
         for img in reference_images:
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            buf.seek(0)
-            parts.append(
-                types.Part.from_bytes(data=buf.getvalue(), mime_type="image/png")
+            contents.append(
+                types.Part.from_bytes(data=_pil_to_bytes(img), mime_type="image/png")
             )
-        parts.append("\nNow generate the requested image:\n")
+        contents.append("\nNow generate the requested image:\n")
 
-    parts.append(full_prompt)
+    contents.append(full_prompt)
 
-    model = genai.GenerativeModel(
-        model_name=MODELS["나노 바나나 2"]["api_name"],
-        generation_config=types.GenerationConfig(
+    response = client.models.generate_content(
+        model=MODELS["나노 바나나 2"]["api_name"],
+        contents=contents,
+        config=types.GenerateContentConfig(
             response_modalities=["IMAGE", "TEXT"],
         ),
     )
 
-    response = model.generate_content(parts)
-
     # 응답에서 이미지 추출
-    for part in response.parts:
+    for part in response.candidates[0].content.parts:
         if part.inline_data and part.inline_data.mime_type.startswith("image/"):
             img_bytes = part.inline_data.data
             if isinstance(img_bytes, str):
@@ -122,7 +117,7 @@ def generate_with_nano_banana_pro(
     나노 바나나 프로 (Gemini 3 Pro 이미지 모델)로 이미지를 생성합니다.
     레퍼런스 이미지를 지원합니다.
     """
-    configure_api(api_key)
+    client = _make_client(api_key)
 
     ratio_cfg = ASPECT_RATIOS[ratio]
     quality_cfg = QUALITY_OPTIONS[quality]
@@ -134,31 +129,27 @@ def generate_with_nano_banana_pro(
         f"Image should be {width}x{height} pixels, aspect ratio {ratio}."
     )
 
-    parts = []
+    contents: list = []
 
     if reference_images:
-        parts.append("Reference images are provided below. Use them as style/composition reference:\n")
+        contents.append("Reference images are provided below. Use them as style/composition reference:\n")
         for img in reference_images:
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            buf.seek(0)
-            parts.append(
-                types.Part.from_bytes(data=buf.getvalue(), mime_type="image/png")
+            contents.append(
+                types.Part.from_bytes(data=_pil_to_bytes(img), mime_type="image/png")
             )
-        parts.append("\nNow generate the requested image:\n")
+        contents.append("\nNow generate the requested image:\n")
 
-    parts.append(full_prompt)
+    contents.append(full_prompt)
 
-    model = genai.GenerativeModel(
-        model_name=MODELS["나노 바나나 프로"]["api_name"],
-        generation_config=types.GenerationConfig(
+    response = client.models.generate_content(
+        model=MODELS["나노 바나나 프로"]["api_name"],
+        contents=contents,
+        config=types.GenerateContentConfig(
             response_modalities=["IMAGE", "TEXT"],
         ),
     )
 
-    response = model.generate_content(parts)
-
-    for part in response.parts:
+    for part in response.candidates[0].content.parts:
         if part.inline_data and part.inline_data.mime_type.startswith("image/"):
             img_bytes = part.inline_data.data
             if isinstance(img_bytes, str):

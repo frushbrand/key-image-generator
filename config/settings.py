@@ -20,12 +20,12 @@ ASPECT_RATIOS = {
 MODELS = {
     "나노 바나나 2": {
         "api_name": "gemini-flash-3.1-preview",
-        "description": "Gemini 3.1 Flash Image Preview (빠름)",
+        "description": "Gemini 3.1 Flash Image Preview (고급 모델)",
         "supports_reference_image": True,
     },
     "나노 바나나 프로": {
         "api_name": "gemini-3.0-pro",
-        "description": "Gemini 3 Pro 이미지 모델 (고품질)",
+        "description": "Gemini 3 Pro 이미지 모델 (가성비 모델)",
         "supports_reference_image": True,
     },
 }
