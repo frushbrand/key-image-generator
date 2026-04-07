@@ -30,12 +30,15 @@ except (ImportError, ModuleNotFoundError) as e:
 
 
 def main():
+    # Skip auto-opening browser in GitHub Codespaces (port forwarding handles access)
+    in_codespaces = os.environ.get("CODESPACES") == "true"
+
     demo = build_ui()
     demo.launch(
         server_name="0.0.0.0",
         server_port=7860,
         share=False,
-        inbrowser=True,
+        inbrowser=not in_codespaces,
     )
 
 

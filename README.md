@@ -1,6 +1,8 @@
 # 🎨 AI 영상 키 이미지 생성 툴
 
-Google Gemini API와 Kling AI API를 활용한 로컬 실행형 키 이미지 + 영상 생성 도구입니다.  
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/frushbrand/key-image-generator)
+
+Google Gemini API와 Kling AI API를 활용한 키 이미지 + 영상 생성 도구입니다.  
 **나노 바나나 2** (Gemini 2.0 Flash Image), **나노 바나나 프로** (Imagen 3), 그리고 **Kling 3 / 3 Pro / 3 Omni** 영상 생성을 지원합니다.
 
 ---
@@ -23,7 +25,22 @@ Google Gemini API와 Kling AI API를 활용한 로컬 실행형 키 이미지 + 
 
 ## 🚀 빠른 시작
 
-### 사전 요구사항
+### 🌐 방법 0 — GitHub Codespaces (설치 불필요, 가장 쉬움)
+
+GitHub 계정만 있으면 아무것도 설치하지 않고 브라우저에서 바로 실행할 수 있습니다.
+
+1. 이 페이지 상단의 **"Open in GitHub Codespaces"** 배지를 클릭하거나,  
+   저장소 메인 페이지에서 **Code → Codespaces → Create codespace on main** 선택
+2. Codespace가 자동으로 환경을 구성하고 앱을 시작합니다 (약 1~2분 소요)
+3. 포트 7860이 자동으로 열리고 앱 화면이 브라우저에 표시됩니다
+4. **API 키 설정** 탭에서 Google / Kling API 키를 입력하면 바로 사용 가능합니다
+
+> Codespace는 GitHub 계정당 월 60시간 무료로 제공됩니다.  
+> 사용 후에는 Codespace를 **Stop** 또는 **Delete** 해 두면 요금이 발생하지 않습니다.
+
+---
+
+### 사전 요구사항 (로컬 실행 시)
 - Python 3.10 이상
 - Google Gemini API 키 ([AI Studio에서 발급](https://aistudio.google.com/app/apikey))
 - Kling AI API 키 ([Kling 개발자 콘솔에서 발급](https://kling.ai/dev/api-key)) ← 영상 생성 기능 사용 시
