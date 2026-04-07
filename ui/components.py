@@ -22,7 +22,6 @@ from config.settings import (
     MAX_REFERENCE_IMAGES,
     SETTINGS_FILE,
     KLING_MODELS,
-    KLING_DURATIONS,
     KLING_DEFAULT_DURATION,
     KLING_DEFAULT_MODEL,
     KLING_VIDEO_RATIOS,
@@ -127,7 +126,6 @@ def build_generate_video_fn(gallery_state: GalleryState):
         access_key: str,
         secret_key: str,
         ref_image,       # gr.Image → PIL Image or None
-        use_last: bool,  # "마지막 생성 이미지 사용" 체크박스
         prompt: str,
         model_label: str,
         duration: int,
@@ -142,16 +140,14 @@ def build_generate_video_fn(gallery_state: GalleryState):
 
         # 레퍼런스 이미지 결정
         pil_image: Optional[Image.Image] = None
-        if use_last and gallery_state.images:
-            pil_image = gallery_state.images[-1]
-        elif ref_image is not None:
+        if ref_image is not None:
             if isinstance(ref_image, Image.Image):
                 pil_image = ref_image
             else:
                 pil_image = Image.fromarray(ref_image).convert("RGB")
 
         if pil_image is None:
-            gr.Warning("레퍼런스 이미지를 업로드하거나 '마지막 생성 이미지 사용'을 선택해주세요.")
+            gr.Warning("레퍼런스 이미지를 업로드하거나 갤러리에서 '영상화' 버튼을 클릭해주세요.")
             return None, "❌ 레퍼런스 이미지 없음"
 
         model_cfg = KLING_MODELS[model_label]
@@ -166,7 +162,7 @@ def build_generate_video_fn(gallery_state: GalleryState):
                 image=pil_image,
                 prompt=prompt or "",
                 model=api_model,
-                duration=duration,
+                duration=int(duration),
                 aspect_ratio=aspect_ratio,
                 mode=mode,
             )
@@ -288,7 +284,17 @@ def build_generate_fn(gallery_state: GalleryState):
             gallery_state.add(item)
 
         progress(1.0, desc="완료!")
-        return gallery_state.to_gradio_gallery(), gallery_state.get_summary(), None
+
+        # 실패 항목 오류 메시지 수집
+        failed_items = [item for item in new_items if item.status == "failed"]
+        status_msg = gallery_state.get_summary()
+        if failed_items:
+            error_details = "\n".join(
+                f"  • #{item.index + 1}: {item.error}" for item in failed_items
+            )
+            status_msg += f"\n\n❌ 실패 원인:\n{error_details}"
+
+        return gallery_state.to_gradio_gallery(), status_msg, None
 
     return generate
 
@@ -322,6 +328,50 @@ def build_ui() -> gr.Blocks:
     saved_kling_access = saved.get("kling_access_key", "")
     saved_kling_secret = saved.get("kling_secret_key", "")
 
+    # 탭 전환을 위한 JavaScript (localStorage로 새로고침 시 탭 유지)
+    TAB_PERSIST_JS = """
+    <script>
+    (function() {
+        var TAB_KEY = 'keyImageGenTab';
+
+        function saveTab(idx) {
+            try { localStorage.setItem(TAB_KEY, String(idx)); } catch(e) {}
+        }
+
+        function restoreTab() {
+            try {
+                var idx = localStorage.getItem(TAB_KEY);
+                if (idx === null) return;
+                var attempt = 0;
+                var iv = setInterval(function() {
+                    var buttons = document.querySelectorAll('.tab-nav button');
+                    if (buttons.length > parseInt(idx)) {
+                        buttons[parseInt(idx)].click();
+                        clearInterval(iv);
+                    }
+                    if (++attempt > 40) clearInterval(iv);
+                }, 100);
+            } catch(e) {}
+        }
+
+        document.addEventListener('click', function(e) {
+            var btn = e.target.closest('.tab-nav button');
+            if (btn) {
+                var buttons = Array.from(document.querySelectorAll('.tab-nav button'));
+                var idx = buttons.indexOf(btn);
+                if (idx >= 0) saveTab(idx);
+            }
+        }, true);
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() { setTimeout(restoreTab, 300); });
+        } else {
+            setTimeout(restoreTab, 300);
+        }
+    })();
+    </script>
+    """
+
     with gr.Blocks(
         title="🎨 키 이미지 생성 툴",
         theme=gr.themes.Soft(),
@@ -338,11 +388,16 @@ def build_ui() -> gr.Blocks:
             <div class="subtitle-text">나노 바나나 2 / 나노 바나나 프로 모델로 영상 키 이미지를 생성하고, Kling AI로 영상을 만들어보세요.</div>
             """
         )
+        gr.HTML(TAB_PERSIST_JS)
 
-        with gr.Tabs():
+        # 탭 간 이미지 전달용 상태
+        selected_img_idx_gen = gr.State(-1)      # 이미지 생성 탭 갤러리 선택 인덱스
+        selected_img_idx_gallery = gr.State(-1)  # 갤러리 탭 선택 인덱스
+
+        with gr.Tabs() as main_tabs:
 
             # ── 탭 1: API 키 설정 ────────────────────────────────────────────
-            with gr.Tab("🔑 API 키 설정"):
+            with gr.Tab("🔑 API 키 설정", id="tab_keys"):
                 gr.Markdown(
                     """
                     ### Google Gemini API 키 설정
@@ -405,7 +460,7 @@ def build_ui() -> gr.Blocks:
                 )
 
             # ── 탭 2: 이미지 생성 ────────────────────────────────────────────
-            with gr.Tab("🖼️ 이미지 생성"):
+            with gr.Tab("🖼️ 이미지 생성", id="tab_image"):
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("### ⚙️ 생성 설정")
@@ -480,16 +535,30 @@ def build_ui() -> gr.Blocks:
                             label="상태",
                             interactive=False,
                             value="대기 중",
+                            lines=4,
                         )
 
                 # 결과 갤러리 (생성 탭 하단)
                 gr.Markdown("### 🖼️ 생성 결과")
+                gr.Markdown("💡 이미지를 클릭해서 선택한 뒤 **🎬 영상화** 버튼을 눌러 영상을 생성할 수 있습니다.")
                 live_gallery = gr.Gallery(
                     label="생성된 이미지",
                     columns=3,
                     height=500,
                     object_fit="contain",
                 )
+                with gr.Row():
+                    gen_selected_info = gr.Textbox(
+                        label="선택된 이미지",
+                        value="이미지를 클릭하여 선택하세요",
+                        interactive=False,
+                        scale=3,
+                    )
+                    btn_make_video_gen = gr.Button(
+                        "🎬 영상화",
+                        variant="secondary",
+                        scale=1,
+                    )
 
                 # 모델 선택 변경 시 설명 업데이트
                 def update_model_info(m):
@@ -526,12 +595,20 @@ def build_ui() -> gr.Blocks:
                     outputs=[live_gallery, gen_status, ref_preview],
                 )
 
+                def on_gen_gallery_select(evt: gr.SelectData):
+                    return evt.index, f"#{evt.index + 1}번 이미지 선택됨"
+
+                live_gallery.select(
+                    on_gen_gallery_select,
+                    outputs=[selected_img_idx_gen, gen_selected_info],
+                )
+
             # ── 탭 3: 영상 생성 (Kling) ──────────────────────────────────────
-            with gr.Tab("🎬 영상 생성 (Kling)"):
+            with gr.Tab("🎬 영상 생성 (Kling)", id="tab_video"):
                 gr.Markdown(
                     """
                     ### 🎬 Kling AI 영상 생성
-                    이미지 생성 탭에서 만든 키 이미지를 레퍼런스로 사용해 영상을 생성합니다.
+                    이미지 생성 탭의 갤러리에서 **영상화** 버튼을 클릭하거나, 아래에 이미지를 직접 업로드하세요.
                     Kling API 키는 **API 키 설정** 탭에서 저장할 수 있습니다.
                     """
                 )
@@ -553,13 +630,8 @@ def build_ui() -> gr.Blocks:
                         )
 
                         gr.Markdown("#### 🖼️ 레퍼런스 이미지")
-                        use_last_chk = gr.Checkbox(
-                            label="✅ 마지막 생성 이미지 사용",
-                            value=True,
-                            info="이미지 생성 탭에서 가장 최근에 생성한 이미지를 자동으로 사용합니다.",
-                        )
                         ref_image_vid = gr.Image(
-                            label="또는 이미지를 직접 업로드",
+                            label="레퍼런스 이미지 (갤러리에서 전송되거나 직접 업로드)",
                             type="pil",
                             height=220,
                         )
@@ -577,10 +649,13 @@ def build_ui() -> gr.Blocks:
                             ),
                         )
 
-                        kling_duration_radio = gr.Radio(
-                            choices=KLING_DURATIONS,
+                        kling_duration_slider = gr.Slider(
+                            minimum=3,
+                            maximum=10,
                             value=KLING_DEFAULT_DURATION,
+                            step=1,
                             label="영상 길이 (초)",
+                            info="3초부터 10초까지 1초 단위로 선택",
                         )
 
                         kling_ratio_dropdown = gr.Dropdown(
@@ -617,17 +692,16 @@ def build_ui() -> gr.Blocks:
                         kling_access_vid,
                         kling_secret_vid,
                         ref_image_vid,
-                        use_last_chk,
                         kling_prompt_input,
                         kling_model_radio,
-                        kling_duration_radio,
+                        kling_duration_slider,
                         kling_ratio_dropdown,
                     ],
                     outputs=[video_output, video_status],
                 )
 
             # ── 탭 4: 갤러리 & 다운로드 ──────────────────────────────────────
-            with gr.Tab("📁 갤러리 & 다운로드"):
+            with gr.Tab("📁 갤러리 & 다운로드", id="tab_gallery"):
                 gr.Markdown("### 생성된 이미지 전체 보기 및 다운로드")
 
                 with gr.Row():
@@ -648,6 +722,19 @@ def build_ui() -> gr.Blocks:
                     object_fit="contain",
                 )
 
+                with gr.Row():
+                    gallery_selected_info = gr.Textbox(
+                        label="선택된 이미지",
+                        value="이미지를 클릭하여 선택하세요",
+                        interactive=False,
+                        scale=3,
+                    )
+                    btn_make_video_gallery = gr.Button(
+                        "🎬 영상화",
+                        variant="secondary",
+                        scale=1,
+                    )
+
                 zip_file_output = gr.File(label="ZIP 다운로드", visible=True)
 
                 def refresh_gallery():
@@ -660,6 +747,49 @@ def build_ui() -> gr.Blocks:
 
                 clear_fn = build_clear_fn(gallery_state)
                 btn_clear.click(clear_fn, outputs=[full_gallery, gallery_status, zip_file_output])
+
+                def on_gallery_tab_select(evt: gr.SelectData):
+                    return evt.index, f"#{evt.index + 1}번 이미지 선택됨"
+
+                full_gallery.select(
+                    on_gallery_tab_select,
+                    outputs=[selected_img_idx_gallery, gallery_selected_info],
+                )
+
+        # ── 탭 간 "영상화" 버튼 공통 핸들러 ─────────────────────────────────
+
+        def _get_image_for_video(idx: int):
+            """gallery_state에서 성공한 이미지를 인덱스로 가져옵니다."""
+            success_items = [i for i in gallery_state.items if i.status == "success"]
+            if 0 <= idx < len(success_items):
+                return success_items[idx].image
+            return None
+
+        def on_make_video_from_gen(idx: int):
+            img = _get_image_for_video(idx)
+            if img is None:
+                gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
+                return None, gr.update()
+            return img, gr.update(selected="tab_video")
+
+        def on_make_video_from_gallery(idx: int):
+            img = _get_image_for_video(idx)
+            if img is None:
+                gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
+                return None, gr.update()
+            return img, gr.update(selected="tab_video")
+
+        btn_make_video_gen.click(
+            on_make_video_from_gen,
+            inputs=[selected_img_idx_gen],
+            outputs=[ref_image_vid, main_tabs],
+        )
+
+        btn_make_video_gallery.click(
+            on_make_video_from_gallery,
+            inputs=[selected_img_idx_gallery],
+            outputs=[ref_image_vid, main_tabs],
+        )
 
         gr.Markdown(
             """
