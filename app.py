@@ -22,9 +22,8 @@ except (ImportError, ModuleNotFoundError) as e:
     print(
         "\n❌ 필수 패키지가 설치되어 있지 않습니다.\n"
         f"   누락된 패키지: {e}\n\n"
-        "   아래 방법 중 하나로 설치해 주세요:\n"
-        "   • Windows  : setup.bat 파일을 더블클릭\n"
-        "   • 직접 설치 : pip install -r requirements.txt\n"
+        "   터미널에서 아래 명령을 실행해 주세요:\n"
+        "   pip install -r requirements.txt\n"
     )
     raise SystemExit(1)
 

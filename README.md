@@ -23,137 +23,50 @@ Google Gemini API와 Kling AI API를 활용한 키 이미지 + 영상 생성 도
 
 ---
 
-## 🚀 빠른 시작
+## 🚀 실행 방법 — GitHub Codespaces
 
-### 🌐 방법 0 — GitHub Codespaces (설치 불필요, 가장 쉬움)
+> GitHub 계정만 있으면 아무것도 설치하지 않고 브라우저에서 바로 실행할 수 있습니다.
 
-GitHub 계정만 있으면 아무것도 설치하지 않고 브라우저에서 바로 실행할 수 있습니다.
+### 1단계 — Codespace 열기
 
-1. 이 페이지 상단의 **"Open in GitHub Codespaces"** 배지를 클릭하거나,  
-   저장소 메인 페이지에서 **Code → Codespaces → Create codespace on main** 선택
-2. Codespace가 자동으로 환경을 구성하고 앱을 시작합니다 (약 1~2분 소요)
-3. 포트 7860이 자동으로 열리고 앱 화면이 브라우저에 표시됩니다
-4. **API 키 설정** 탭에서 Google / Kling API 키를 입력하면 바로 사용 가능합니다
+이 페이지 상단의 **"Open in GitHub Codespaces"** 배지를 클릭하거나,  
+저장소 메인 페이지에서 **Code → Codespaces → Create codespace on main** 을 선택합니다.
 
-> Codespace는 GitHub 계정당 월 60시간 무료로 제공됩니다.  
-> 사용 후에는 Codespace를 **Stop** 또는 **Delete** 해 두면 요금이 발생하지 않습니다.
+### 2단계 — 자동 시작 대기
 
----
+Codespace가 열리면 자동으로 패키지 설치 및 앱 실행이 진행됩니다 (약 1~2분 소요).  
+완료되면 포트 7860이 자동으로 포워딩되고 **앱 화면이 브라우저에 표시**됩니다.
 
-### 사전 요구사항 (로컬 실행 시)
-- Python 3.10 이상
-- Google Gemini API 키 ([AI Studio에서 발급](https://aistudio.google.com/app/apikey))
-- Kling AI API 키 ([Kling 개발자 콘솔에서 발급](https://kling.ai/dev/api-key)) ← 영상 생성 기능 사용 시
+> 앱 화면이 바로 뜨지 않으면 하단 **PORTS** 탭에서 포트 7860의 🌐 아이콘을 클릭하세요.
 
----
+### 3단계 — API 키 입력
 
-### 🟢 방법 1 — 원클릭 설치 스크립트 (비개발자 권장)
+앱의 **🔑 API 키 설정** 탭에서 Google / Kling API 키를 입력하고 저장합니다.  
+키는 Codespace 내부 파일(`.app_settings.json`)에 저장되며, Codespace를 재시작해도 유지됩니다.
 
-Python만 설치되어 있으면 스크립트 하나로 자동 설치 후 실행됩니다.
-
-#### Windows
-1. [Python 3.10+](https://www.python.org/downloads/) 설치 (설치 시 **"Add Python to PATH"** 옵션 반드시 체크)
-2. 이 저장소를 [ZIP으로 다운로드](https://github.com/frushbrand/key-image-generator/archive/refs/heads/main.zip) 후 압축 해제
-3. 압축 해제된 폴더에서 **`setup.bat`** 파일을 **더블클릭**
-4. 브라우저가 자동으로 열리며 **http://localhost:7860** 접속
-
-#### macOS / Linux
-```bash
-# 저장소 클론 후
-chmod +x setup.sh
-./setup.sh
-```
-
-> 이후 실행 시에도 같은 스크립트를 실행하면 됩니다. (패키지 재설치 없이 빠르게 시작)
+> **보안 팁:** API 키를 영구적으로 관리하려면 저장소 설정의 **Codespaces Secrets** 에 등록하세요.  
+> `GOOGLE_API_KEY`, `KLING_ACCESS_KEY`, `KLING_SECRET_KEY` 이름으로 등록하면 앱이 자동으로 불러옵니다.  
+> Secrets 등록 경로: `github.com/frushbrand/key-image-generator` → **Settings → Secrets and variables → Codespaces**
 
 ---
 
-### 🐳 방법 2 — Docker (환경 문제 없이 가장 안정적)
+## 🔄 Codespace 재시작 시
 
-[Docker Desktop](https://www.docker.com/products/docker-desktop/) 설치 후:
+Codespace를 Stop 후 다시 시작하면 앱이 자동으로 재실행됩니다.  
+앱이 시작되는 동안 잠깐 기다린 뒤 PORTS 탭에서 접속하면 됩니다.
+
+앱을 수동으로 다시 시작하고 싶다면 터미널에서:
 
 ```bash
-# 저장소 클론
-git clone https://github.com/frushbrand/key-image-generator.git
-cd key-image-generator
-
-# 실행 (최초 1회 빌드 후 바로 시작)
-docker compose up --build
-```
-
-브라우저에서 **http://localhost:7860** 접속  
-종료: `Ctrl+C` / 이후 재실행: `docker compose up`
-
----
-
-### ⚙️ 방법 3 — 직접 설치 (개발자용)
-
-> **명령어 입력 위치**: macOS/Linux는 **터미널**, Windows는 **명령 프롬프트(cmd)** 또는 **PowerShell**을 열고 아래 명령을 순서대로 입력하면 됩니다.
-
-```bash
-# 1. 저장소 클론
-git clone https://github.com/frushbrand/key-image-generator.git
-cd key-image-generator
-
-# 2. 가상환경 생성 (권장)
-python -m venv venv
-source venv/bin/activate        # macOS / Linux
-# venv\Scripts\activate         # Windows
-
-# 3. 의존성 설치
-pip install -r requirements.txt
-
-# 4. 실행
 python app.py
 ```
 
-브라우저에서 **http://localhost:7860** 접속
-
 ---
 
-## 🔑 API 키 설정 방법
+## 🔑 API 키 발급
 
-### Google Gemini API 키
-
-**방법 1 – UI에서 입력 (권장)**  
-앱 실행 후 `🔑 API 키 설정` 탭에서 키를 입력하고 저장하면 `.app_settings.json`에 보관됩니다.
-
-**방법 2 – .env 파일**  
-```bash
-cp .env.example .env
-# .env 파일을 열어 GOOGLE_API_KEY=여기에_키_입력
-```
-
-### Kling AI API 키 (영상 생성)
-
-1. [https://kling.ai/dev/api-key](https://kling.ai/dev/api-key) 접속 후 로그인
-2. **API 키 생성** → **Access Key**와 **Secret Key** 복사 (Secret Key는 최초 1회만 표시)
-3. 앱의 `🔑 API 키 설정` 탭 하단 Kling 섹션에 입력 후 저장
-
----
-
-## 📁 디렉토리 구조
-
-```
-key-image-generator/
-├── app.py                  # 메인 진입점
-├── requirements.txt        # Python 의존성
-├── .env.example            # 환경변수 예시
-├── config/
-│   └── settings.py         # 모델·화질·비율·Kling 설정 상수
-├── core/
-│   ├── gemini_client.py    # Gemini API 연동 (이미지 생성)
-│   ├── kling_client.py     # Kling AI 공식 API 연동 (영상 생성)
-│   └── image_utils.py      # 이미지/영상 처리·저장
-├── ui/
-│   ├── components.py       # Gradio UI 전체
-│   └── gallery.py          # 갤러리 상태 관리
-└── outputs/                # 생성 이미지/영상 자동 저장
-    └── YYYY-MM-DD/
-        ├── *.png
-        ├── *.mp4
-        └── *.json          # 메타데이터 (프롬프트·설정)
-```
+- **Google Gemini API 키**: [Google AI Studio](https://aistudio.google.com/app/apikey) 에서 무료 발급
+- **Kling AI API 키** (영상 생성 기능): [Kling 개발자 콘솔](https://kling.ai/dev/api-key) 에서 발급 (유료)
 
 ---
 
@@ -178,12 +91,40 @@ key-image-generator/
 
 ---
 
+## 📁 디렉토리 구조
+
+```
+key-image-generator/
+├── app.py                  # 메인 진입점
+├── requirements.txt        # Python 의존성
+├── .env.example            # 환경변수 예시 (Codespaces Secrets 참고용)
+├── .devcontainer/
+│   └── devcontainer.json   # Codespaces 환경 설정
+├── config/
+│   └── settings.py         # 모델·화질·비율·Kling 설정 상수
+├── core/
+│   ├── gemini_client.py    # Gemini API 연동 (이미지 생성)
+│   ├── kling_client.py     # Kling AI 공식 API 연동 (영상 생성)
+│   └── image_utils.py      # 이미지/영상 처리·저장
+├── ui/
+│   ├── components.py       # Gradio UI 전체
+│   └── gallery.py          # 갤러리 상태 관리
+└── outputs/                # 생성 이미지/영상 자동 저장
+    └── YYYY-MM-DD/
+        ├── *.png
+        ├── *.mp4
+        └── *.json          # 메타데이터 (프롬프트·설정)
+```
+
+---
+
 ## ⚠️ 주의사항
 
 - Gemini 3 Pro(나노 바나나 프로)는 Preview 모델로 접근 권한이 필요할 수 있습니다.
 - API 요청 한도(quota)에 따라 생성이 제한될 수 있습니다.
-- 생성된 이미지와 영상은 로컬에만 저장되며, 외부로 전송되지 않습니다.
+- 생성된 이미지와 영상은 Codespace 내에만 저장되며, 외부로 전송되지 않습니다.
 - Kling API는 유료 서비스입니다. 사용 전 Kling 요금 정책을 확인하세요.
+- Codespace는 GitHub 계정당 **월 60시간 무료** 제공됩니다. 사용 후 **Stop** 또는 **Delete** 해 두세요.
 
 ---
 
