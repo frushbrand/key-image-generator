@@ -343,6 +343,7 @@ def build_ui() -> gr.Blocks:
                 var idx = localStorage.getItem(TAB_KEY);
                 if (idx === null) return;
                 var attempt = 0;
+                // Poll up to 40 times (4 seconds) waiting for Gradio to render tab buttons
                 var iv = setInterval(function() {
                     var buttons = document.querySelectorAll('.tab-nav button');
                     if (buttons.length > parseInt(idx)) {
@@ -364,8 +365,12 @@ def build_ui() -> gr.Blocks:
         }, true);
 
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', function() { setTimeout(restoreTab, 300); });
+            document.addEventListener('DOMContentLoaded', function() {
+                // 300ms delay gives Gradio time to finish rendering the tab UI
+                setTimeout(restoreTab, 300);
+            });
         } else {
+            // 300ms delay gives Gradio time to finish rendering the tab UI
             setTimeout(restoreTab, 300);
         }
     })();
@@ -765,14 +770,8 @@ def build_ui() -> gr.Blocks:
                 return success_items[idx].image
             return None
 
-        def on_make_video_from_gen(idx: int):
-            img = _get_image_for_video(idx)
-            if img is None:
-                gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
-                return None, gr.update()
-            return img, gr.update(selected="tab_video")
-
-        def on_make_video_from_gallery(idx: int):
+        def on_make_video(idx: int):
+            """선택된 이미지를 영상 생성 탭으로 전송합니다."""
             img = _get_image_for_video(idx)
             if img is None:
                 gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
@@ -780,13 +779,13 @@ def build_ui() -> gr.Blocks:
             return img, gr.update(selected="tab_video")
 
         btn_make_video_gen.click(
-            on_make_video_from_gen,
+            on_make_video,
             inputs=[selected_img_idx_gen],
             outputs=[ref_image_vid, main_tabs],
         )
 
         btn_make_video_gallery.click(
-            on_make_video_from_gallery,
+            on_make_video,
             inputs=[selected_img_idx_gallery],
             outputs=[ref_image_vid, main_tabs],
         )
