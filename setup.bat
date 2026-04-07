@@ -23,6 +23,18 @@ if errorlevel 1 (
 for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set PYVER=%%v
 echo [OK] Python %PYVER% detected
 
+:: Check Python version >= 3.10
+python -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >nul 2>&1
+if errorlevel 1 (
+    echo [X] Python %PYVER% is not supported.
+    echo     Python 3.10 or higher is required.
+    echo     Please install Python 3.10+ from:
+    echo     https://www.python.org/downloads/
+    echo     Make sure to check "Add Python to PATH" during installation.
+    pause
+    exit /b 1
+)
+
 cd /d "%~dp0"
 
 :: Create virtual environment (only if it does not exist)
