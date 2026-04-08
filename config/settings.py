@@ -38,26 +38,21 @@ MODELS = {
 # ── Kling 비디오 모델 ──────────────────────────────────────────────────────────
 
 KLING_MODELS = {
-    "Kling 3 Standard": {
+    "Kling v3": {
         "api_name": "kling-v3",
-        "description": "Kling v3 Standard (빠름, 범용)",
+        "description": "Kling v3 (범용, 빠름)",
         "mode": "standard",
-    },
-    "Kling 3 Pro": {
-        "api_name": "kling-v3-pro",
-        "description": "Kling v3 Pro (고품질, 고해상도)",
-        "mode": "professional",
     },
     "Kling 3 Omni": {
         "api_name": "kling-v3-omni",
-        "description": "Kling v3 Omni (네이티브 오디오, 최고 품질)",
+        "description": "Kling v3 Omni (최고 품질, 네이티브 오디오)",
         "mode": "professional",
     },
 }
 
 KLING_DURATIONS = list(range(3, 16))  # 3 ~ 15초 (1초 단위)
 KLING_DEFAULT_DURATION = 5
-KLING_DEFAULT_MODEL = "Kling 3 Standard"
+KLING_DEFAULT_MODEL = "Kling v3"
 
 KLING_VIDEO_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
 KLING_DEFAULT_RATIO = "16:9"
