@@ -618,7 +618,7 @@ def build_ui() -> gr.Blocks:
 
                 # 결과 갤러리 (생성 탭 하단)
                 gr.Markdown("### 🖼️ 생성 결과")
-                gr.Markdown("💡 이미지를 클릭해서 선택한 뒤 아래 버튼으로 영상화하거나 레퍼런스로 재사용할 수 있습니다.")
+                gr.Markdown("💡 이미지를 클릭해서 선택한 뒤 **🎬 영상 레퍼런스** 또는 **🖼️ 이미지 레퍼런스** 버튼을 눌러 활용할 수 있습니다.")
                 live_gallery = gr.Gallery(
                     label="생성된 이미지",
                     columns=4,
@@ -639,12 +639,12 @@ def build_ui() -> gr.Blocks:
                         scale=1,
                     )
                     btn_make_video_gen = gr.Button(
-                        "🎬 영상화",
+                        "🎬 영상 레퍼런스",
                         variant="secondary",
                         scale=1,
                     )
                     btn_use_as_ref_gen = gr.Button(
-                        "🖼️ 이미지 레퍼런스로 사용",
+                        "🖼️ 이미지 레퍼런스",
                         variant="secondary",
                         scale=1,
                     )
@@ -881,12 +881,12 @@ def build_ui() -> gr.Blocks:
                         scale=1,
                     )
                     btn_make_video_gallery = gr.Button(
-                        "🎬 영상화",
+                        "🎬 영상 레퍼런스",
                         variant="secondary",
                         scale=1,
                     )
                     btn_use_as_ref_gallery = gr.Button(
-                        "🖼️ 이미지 레퍼런스로 사용",
+                        "🖼️ 이미지 레퍼런스",
                         variant="secondary",
                         scale=1,
                     )
