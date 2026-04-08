@@ -837,6 +837,12 @@ def build_ui() -> gr.Blocks:
                             file_types=["image"],
                         )
 
+                        ref_image_add = gr.File(
+                            label="➕ 레퍼런스 이미지 추가 (현재 목록에 추가됩니다)",
+                            file_count="multiple",
+                            file_types=["image"],
+                        )
+
                         btn_clear_refs = gr.Button(
                             "🗑️ 레퍼런스 전체 비우기",
                             variant="secondary",
@@ -949,15 +955,50 @@ def build_ui() -> gr.Blocks:
                         imgs.append(p)
                     return gr.Gallery(visible=True, value=imgs)
 
+                def on_add_ref_images(new_files, current_files):
+                    """추가 업로드된 파일을 기존 레퍼런스 이미지 목록에 병합합니다."""
+                    if not new_files:
+                        return gr.update(), gr.update(value=None)
+
+                    current_paths = []
+                    if current_files:
+                        current_paths = [
+                            f if isinstance(f, str) else f.path
+                            for f in current_files if f is not None
+                        ]
+
+                    new_paths = [
+                        f if isinstance(f, str) else f.path
+                        for f in new_files if f is not None
+                    ]
+
+                    combined = (current_paths + new_paths)[:MAX_REFERENCE_IMAGES]
+                    if len(current_paths) + len(new_paths) > MAX_REFERENCE_IMAGES:
+                        gr.Warning(
+                            f"레퍼런스 이미지는 최대 {MAX_REFERENCE_IMAGES}장까지 추가할 수 있습니다. "
+                            f"처음 {MAX_REFERENCE_IMAGES}장만 사용됩니다."
+                        )
+
+                    return gr.update(value=combined), gr.update(value=None)
+
                 model_radio.change(update_model_info, inputs=[model_radio], outputs=[model_info])
                 ref_image_upload.change(
                     update_ref_visibility,
                     inputs=[ref_image_upload],
                     outputs=[ref_preview],
                 )
+                ref_image_add.change(
+                    on_add_ref_images,
+                    inputs=[ref_image_add, ref_image_upload],
+                    outputs=[ref_image_upload, ref_image_add],
+                ).then(
+                    update_ref_visibility,
+                    inputs=[ref_image_upload],
+                    outputs=[ref_preview],
+                )
                 btn_clear_refs.click(
-                    lambda: (gr.update(value=None), gr.update(visible=False, value=[])),
-                    outputs=[ref_image_upload, ref_preview],
+                    lambda: (gr.update(value=None), gr.update(value=None), gr.update(visible=False, value=[])),
+                    outputs=[ref_image_upload, ref_image_add, ref_preview],
                 )
 
                 generate_fn = build_generate_fn(gallery_state)
