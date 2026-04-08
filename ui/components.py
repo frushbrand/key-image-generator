@@ -570,13 +570,13 @@ def build_ui() -> gr.Blocks:
         window.addEventListener('resize', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); });
     })();
 
-    // ── 다중 선택 ────────────────────────────────────────────────────────────
+    // ── 다중 선택 (항상 표시, 토글 없음) ───────────────────────────────────
     (function() {
         var GIDS = ['live-gallery', 'full-gallery'];
         var TBIDS = {'live-gallery': 'ms-state-gen', 'full-gallery': 'ms-state-gallery'};
-        var TOGGLE_IDS = {'live-gallery': 'ms-toggle-gen', 'full-gallery': 'ms-toggle-gallery'};
-        var active = {}, sels = {}, containers = {};
-        GIDS.forEach(function(id) { active[id] = false; sels[id] = new Set(); containers[id] = null; });
+        var CLEAR_IDS = {'live-gallery': 'ms-toggle-gen', 'full-gallery': 'ms-toggle-gallery'};
+        var sels = {}, containers = {};
+        GIDS.forEach(function(id) { sels[id] = new Set(); containers[id] = null; });
 
         function getItems(gid) {
             var g = document.getElementById(gid); if (!g) return [];
@@ -588,7 +588,8 @@ def build_ui() -> gr.Blocks:
         function getContainer(gid) {
             if (!containers[gid]) {
                 var c = document.createElement('div');
-                c.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:9997;';
+                // z-index 10001: 호버 플로팅 오버레이(10000) 위에 표시
+                c.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:10001;';
                 document.body.appendChild(c);
                 containers[gid] = c;
             }
@@ -605,18 +606,21 @@ def build_ui() -> gr.Blocks:
             inp.dispatchEvent(new Event('change', {bubbles: true}));
         }
         function refreshOverlays(gid) {
-            var c = getContainer(gid), items = getItems(gid), isOn = active[gid], sel = sels[gid];
+            var c = getContainer(gid), items = getItems(gid), sel = sels[gid];
             while (c.children.length > items.length) c.removeChild(c.lastChild);
             while (c.children.length < items.length) {
                 var d = document.createElement('div');
-                d.style.cssText = 'position:fixed;box-sizing:border-box;display:flex;align-items:flex-start;justify-content:flex-start;padding:4px;';
+                d.style.cssText = 'position:fixed;box-sizing:border-box;display:flex;align-items:flex-start;justify-content:flex-start;padding:4px;pointer-events:none;';
                 var badge = document.createElement('div');
                 badge.className = 'ms-badge';
                 badge.style.cssText = [
                     'width:22px', 'height:22px', 'border-radius:50%',
                     'display:flex', 'align-items:center', 'justify-content:center',
                     'font-size:0.85rem', 'font-weight:700', 'color:#fff',
-                    'box-shadow:0 1px 4px rgba(0,0,0,0.5)', 'user-select:none', 'pointer-events:none'
+                    'box-shadow:0 1px 4px rgba(0,0,0,0.5)', 'user-select:none',
+                    'pointer-events:auto', 'cursor:pointer',
+                    'transition:background 0.15s',
+                    'border:2px solid rgba(255,255,255,0.7)'
                 ].join(';');
                 d.appendChild(badge);
                 c.appendChild(d);
@@ -625,46 +629,34 @@ def build_ui() -> gr.Blocks:
                 var r = item.getBoundingClientRect(), d = c.children[idx];
                 d.style.left = r.left + 'px'; d.style.top = r.top + 'px';
                 d.style.width = r.width + 'px'; d.style.height = r.height + 'px';
-                d.style.pointerEvents = isOn ? 'auto' : 'none';
-                d.style.zIndex = isOn ? '9997' : '0';
-                d.style.cursor = isOn ? 'pointer' : '';
                 var badge = d.querySelector('.ms-badge');
-                badge.style.display = isOn ? 'flex' : 'none';
-                badge.style.background = sel.has(idx) ? '#4f46e5' : 'rgba(0,0,0,0.4)';
-                badge.textContent = sel.has(idx) ? '✓' : '○';
-                d.onclick = null;
-                if (isOn) {
-                    d.onclick = (function(i) {
-                        return function(e) {
-                            e.stopPropagation(); e.preventDefault();
-                            if (sel.has(i)) sel.delete(i); else sel.add(i);
-                            refreshOverlays(gid); syncTextbox(gid);
-                        };
-                    })(idx);
-                }
+                badge.style.background = sel.has(idx) ? '#4f46e5' : 'rgba(0,0,0,0.35)';
+                badge.style.borderColor = sel.has(idx) ? '#fff' : 'rgba(255,255,255,0.7)';
+                badge.textContent = sel.has(idx) ? '✓' : '';
+                badge.onclick = null;
+                badge.onclick = (function(i) {
+                    return function(e) {
+                        e.stopPropagation(); e.preventDefault();
+                        if (sel.has(i)) sel.delete(i); else sel.add(i);
+                        refreshOverlays(gid); syncTextbox(gid);
+                    };
+                })(idx);
             });
         }
-        function toggleMode(gid) {
-            active[gid] = !active[gid];
-            if (!active[gid]) { sels[gid].clear(); syncTextbox(gid); }
-            refreshOverlays(gid);
-            var wrapper = document.getElementById(TOGGLE_IDS[gid]);
-            if (wrapper) {
-                var b = wrapper.tagName === 'BUTTON' ? wrapper : wrapper.querySelector('button');
-                if (b) {
-                    b.style.background = active[gid] ? '#4f46e5' : '';
-                    b.style.color = active[gid] ? '#fff' : '';
-                }
-            }
-        }
-        // 토글 버튼 클릭 처리
+        // 선택 초기화 버튼 클릭
         document.addEventListener('click', function(e) {
-            if (e.target.closest('#ms-toggle-gen')) toggleMode('live-gallery');
-            else if (e.target.closest('#ms-toggle-gallery')) toggleMode('full-gallery');
+            GIDS.forEach(function(gid) {
+                var cid = CLEAR_IDS[gid];
+                if (e.target.closest('#' + cid)) {
+                    sels[gid].clear();
+                    syncTextbox(gid);
+                    refreshOverlays(gid);
+                }
+            });
         });
         // 갤러리 변경 감지 → 배지 갱신
         var obs = new MutationObserver(function() {
-            GIDS.forEach(function(gid) { if (active[gid]) refreshOverlays(gid); });
+            GIDS.forEach(refreshOverlays);
         });
         function attachObs() {
             GIDS.forEach(function(gid) {
@@ -673,10 +665,10 @@ def build_ui() -> gr.Blocks:
             });
         }
         window.addEventListener('scroll', function() {
-            GIDS.forEach(function(gid) { if (active[gid]) refreshOverlays(gid); });
+            GIDS.forEach(refreshOverlays);
         }, true);
         window.addEventListener('resize', function() {
-            GIDS.forEach(function(gid) { if (active[gid]) refreshOverlays(gid); });
+            GIDS.forEach(refreshOverlays);
         });
         setTimeout(attachObs, 800);
         setTimeout(function() { GIDS.forEach(refreshOverlays); }, 1500);
@@ -775,37 +767,66 @@ def build_ui() -> gr.Blocks:
             transform: scale(1.12);
         }
 
-        /* 레퍼런스 파일 목록의 개별 삭제(×) 버튼이 파일 컴포넌트 헤더 버튼에 가려지지 않도록 */
+        /* 레퍼런스 파일 삭제 버튼이 다른 버튼에 가려지지 않도록 */
+        [data-testid="file-upload"],
+        [data-testid="file-upload"] > div,
+        .gradio-file,
+        .gradio-file > .wrap,
         .file-upload .file-preview,
         .file-upload .file-preview-holder,
         .gradio-file .file-preview,
-        .gradio-file .file-preview-holder {
-            overflow: visible !important;
-        }
+        .gradio-file .file-preview-holder,
         .file-upload .wrap,
         .gradio-file .wrap {
             overflow: visible !important;
         }
-        /* 파일 목록이 우측 아이콘 버튼 아래로 들어가지 않도록 여백 확보 */
-        .file-upload ul.file-list,
-        .gradio-file ul,
-        .file-upload .file-name,
-        .gradio-file .file-name {
-            padding-right: 8px !important;
+        /* 파일 목록 아이템을 flex 행으로 */
+        [data-testid="file-upload"] li,
+        .gradio-file li,
+        .file-upload li {
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            overflow: visible !important;
+            position: relative !important;
+            z-index: 5 !important;
+            min-height: 32px !important;
         }
-        /* 개별 파일 삭제 버튼 z-index 올리기 */
+        /* 파일명 영역 */
+        [data-testid="file-upload"] li > span:first-child,
+        [data-testid="file-upload"] li > a:first-child,
+        .gradio-file li > span:first-child,
+        .file-upload .file-name {
+            flex: 1 !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
+            margin-right: 4px !important;
+        }
+        /* 개별 파일 삭제(×) 버튼 */
+        [data-testid="file-upload"] li button,
+        .gradio-file li button,
         .file-upload .delete,
         .gradio-file .delete,
         .file-upload button.delete,
         .gradio-file button.delete {
-            z-index: 20 !important;
+            flex-shrink: 0 !important;
             position: relative !important;
+            z-index: 30 !important;
+            opacity: 1 !important;
+            visibility: visible !important;
+            pointer-events: auto !important;
+            min-width: 24px !important;
+            min-height: 24px !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
         }
-        /* 파일 컴포넌트 우상단 아이콘 버튼이 목록 위로 표시되도록 */
+        /* 파일 컴포넌트 우상단 아이콘 버튼 */
         .file-upload .icon-button,
         .gradio-file > .wrap > .icon-button,
         [data-testid="file-upload"] .icon-button {
-            z-index: 15 !important;
+            z-index: 10 !important;
         }
         """,
     ) as demo:
@@ -1013,7 +1034,7 @@ def build_ui() -> gr.Blocks:
                 single_png_output_gen = gr.File(label="PNG 다운로드", visible=True, elem_id="single-png-gen")
                 with gr.Row():
                     btn_multi_select_gen = gr.Button(
-                        "☑️ 다중 선택",
+                        "✖️ 선택 초기화",
                         variant="secondary",
                         size="sm",
                         scale=1,
@@ -1039,17 +1060,21 @@ def build_ui() -> gr.Blocks:
 
                 def update_ref_visibility(files):
                     if not files:
-                        return gr.Gallery(visible=False, value=[])
+                        return gr.update(visible=False, value=[])
                     thumbs = []
                     for f in files:
-                        p = f if isinstance(f, str) else f.path
                         try:
-                            img = Image.open(p).convert("RGB")
-                            img.thumbnail((256, 256), Image.LANCZOS)
-                            thumbs.append(img)
-                        except (IOError, OSError, SyntaxError):
+                            p = f if isinstance(f, str) else f.path
+                            if not p:
+                                continue
+                            with Image.open(str(p)) as img:
+                                # draft()로 JPEG 고화질 원본 전체 디코딩을 건너뜀 (속도 향상)
+                                img.draft('RGB', (128, 128))
+                                img.thumbnail((128, 128), Image.BILINEAR)
+                                thumbs.append(img.convert("RGB").copy())
+                        except Exception:
                             continue
-                    return gr.Gallery(visible=bool(thumbs), value=thumbs)
+                    return gr.update(visible=bool(thumbs), value=thumbs)
 
                 def on_add_ref_images(new_files, current_files):
                     """추가 업로드된 파일을 기존 레퍼런스 이미지 목록에 병합합니다."""
@@ -1110,6 +1135,10 @@ def build_ui() -> gr.Blocks:
                         ref_image_upload,
                     ],
                     outputs=[live_gallery, gen_status],
+                ).then(
+                    update_ref_visibility,
+                    inputs=[ref_image_upload],
+                    outputs=[ref_preview],
                 )
 
                 def on_gen_gallery_select(evt: gr.SelectData):
@@ -1427,7 +1456,7 @@ def build_ui() -> gr.Blocks:
                 zip_file_output = gr.File(label="ZIP 다운로드", visible=True, elem_id="full-zip-gallery")
                 with gr.Row():
                     btn_multi_select_gallery = gr.Button(
-                        "☑️ 다중 선택",
+                        "✖️ 선택 초기화",
                         variant="secondary",
                         size="sm",
                         scale=1,

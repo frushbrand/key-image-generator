@@ -70,9 +70,15 @@ def generate_with_nano_banana_2(
     width = int(ratio_cfg["width"] * quality_cfg["width_multiplier"])
     height = int(ratio_cfg["height"] * quality_cfg["width_multiplier"])
 
-    # 프롬프트에 크기 힌트 추가
+    # 한국어 감지 시 정확한 한글 렌더링 지시 추가
+    _has_korean = any('\uAC00' <= c <= '\uD7A3' for c in prompt)
+    _korean_instr = (
+        "\n[중요: 이미지 내에 한국어 텍스트가 포함된 경우, 한글 글자를 정확하고 선명하게 렌더링해주세요.]"
+        if _has_korean else ""
+    )
+
     full_prompt = (
-        f"{prompt}\n\n"
+        f"{prompt}{_korean_instr}\n\n"
         f"Image should be {width}x{height} pixels, aspect ratio {ratio}."
     )
 
@@ -128,8 +134,14 @@ def generate_with_nano_banana_pro(
     width = int(ratio_cfg["width"] * quality_cfg["width_multiplier"])
     height = int(ratio_cfg["height"] * quality_cfg["width_multiplier"])
 
+    _has_korean = any('\uAC00' <= c <= '\uD7A3' for c in prompt)
+    _korean_instr = (
+        "\n[중요: 이미지 내에 한국어 텍스트가 포함된 경우, 한글 글자를 정확하고 선명하게 렌더링해주세요.]"
+        if _has_korean else ""
+    )
+
     full_prompt = (
-        f"{prompt}\n\n"
+        f"{prompt}{_korean_instr}\n\n"
         f"Image should be {width}x{height} pixels, aspect ratio {ratio}."
     )
 
@@ -183,8 +195,14 @@ def generate_with_nano_banana(
     width = int(ratio_cfg["width"] * quality_cfg["width_multiplier"])
     height = int(ratio_cfg["height"] * quality_cfg["width_multiplier"])
 
+    _has_korean = any('\uAC00' <= c <= '\uD7A3' for c in prompt)
+    _korean_instr = (
+        "\n[중요: 이미지 내에 한국어 텍스트가 포함된 경우, 한글 글자를 정확하고 선명하게 렌더링해주세요.]"
+        if _has_korean else ""
+    )
+
     full_prompt = (
-        f"{prompt}\n\n"
+        f"{prompt}{_korean_instr}\n\n"
         f"Image should be {width}x{height} pixels, aspect ratio {ratio}."
     )
 
