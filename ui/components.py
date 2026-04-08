@@ -186,7 +186,7 @@ def build_unified_video_fn(gallery_state: GalleryState):
             else:
                 # 레퍼런스 이미지 모드 — 이미지가 없으면 텍스트 투 비디오로 대체
                 if ref_image is None:
-                    if not (prompt and prompt.strip()):
+                    if not (prompt or "").strip():
                         return None, "❌ 레퍼런스 이미지가 없으면 프롬프트를 입력해주세요."
                     progress(0.05, desc="텍스트→영상 작업 요청 중...")
                     task_id = create_text_to_video_task(
@@ -391,6 +391,15 @@ def build_ui() -> gr.Blocks:
     saved_api_key = saved.get("api_key", "")
     saved_kling_access = saved.get("kling_access_key", "")
     saved_kling_secret = saved.get("kling_secret_key", "")
+
+    def _use_as_ref(idx: int):
+        """선택된 이미지를 이미지 생성 레퍼런스로 설정하는 공용 핸들러."""
+        success_items = [i for i in gallery_state.items if i.status == "success"]
+        if not (0 <= idx < len(success_items)):
+            gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
+            return None, "없음"
+        item = success_items[idx]
+        return item.image, f"#{idx + 1}번 이미지 (레퍼런스로 설정됨)"
 
     # 탭 전환을 위한 JavaScript (localStorage로 새로고침 시 탭 유지)
     TAB_PERSIST_JS = """
@@ -702,17 +711,8 @@ def build_ui() -> gr.Blocks:
                     outputs=[single_png_output_gen],
                 )
 
-                def on_use_as_ref(idx: int):
-                    """선택된 이미지를 이미지 생성 레퍼런스로 설정합니다."""
-                    success_items = [i for i in gallery_state.items if i.status == "success"]
-                    if not (0 <= idx < len(success_items)):
-                        gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
-                        return None, "없음"
-                    item = success_items[idx]
-                    return item.image, f"#{idx + 1}번 이미지 (레퍼런스로 설정됨)"
-
                 btn_use_as_ref_gen.click(
-                    on_use_as_ref,
+                    _use_as_ref,
                     inputs=[selected_img_idx_gen],
                     outputs=[gallery_ref_state, gallery_ref_notice_gen],
                 )
@@ -926,17 +926,8 @@ def build_ui() -> gr.Blocks:
                     outputs=[single_png_output_gallery],
                 )
 
-                def on_use_as_ref_gallery(idx: int):
-                    """선택된 이미지를 이미지 생성 레퍼런스로 설정합니다."""
-                    success_items = [i for i in gallery_state.items if i.status == "success"]
-                    if not (0 <= idx < len(success_items)):
-                        gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
-                        return None, "없음"
-                    item = success_items[idx]
-                    return item.image, f"#{idx + 1}번 이미지 (레퍼런스로 설정됨)"
-
                 btn_use_as_ref_gallery.click(
-                    on_use_as_ref_gallery,
+                    _use_as_ref,
                     inputs=[selected_img_idx_gallery],
                     outputs=[gallery_ref_state, gallery_ref_notice_gal],
                 )
