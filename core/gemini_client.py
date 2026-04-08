@@ -1,6 +1,6 @@
 """
 Gemini API 클라이언트 모듈
-나노 바나나 2 (Gemini 3.1 Flash Image Preview) 및 나노 바나나 프로 (Gemini 3 Pro 이미지 모델)를 지원합니다.
+나노 바나나 2 / 나노 바나나 프로 (gemini-2.0-flash-preview-image-generation) 모델을 사용합니다.
 """
 
 import base64

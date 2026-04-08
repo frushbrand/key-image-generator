@@ -208,7 +208,6 @@ def build_generate_fn(gallery_state: GalleryState):
     """생성 버튼 클릭 핸들러 팩토리"""
 
     def generate(
-        api_key: str,
         model_name: str,
         prompt: str,
         ratio: str,
@@ -217,8 +216,10 @@ def build_generate_fn(gallery_state: GalleryState):
         ref_images,  # Gradio File 컴포넌트 값 (list of paths or None)
         progress=gr.Progress(track_tqdm=True),
     ):
+        cfg = load_settings()
+        api_key = cfg.get("api_key", "")
         if not api_key or not api_key.strip():
-            gr.Warning("API 키를 입력해주세요.")
+            gr.Warning("API 키 설정 탭에서 Google API 키를 먼저 저장해주세요.")
             return gallery_state.to_gradio_gallery(), gallery_state.get_summary(), None
 
         if not prompt or not prompt.strip():
@@ -476,13 +477,6 @@ def build_ui() -> gr.Blocks:
                     with gr.Column(scale=1):
                         gr.Markdown("### ⚙️ 생성 설정")
 
-                        api_key_gen = gr.Textbox(
-                            label="Google API 키",
-                            placeholder="AIza... (API 키 설정 탭에서 저장하면 자동 입력)",
-                            value=saved_api_key,
-                            type="password",
-                        )
-
                         model_radio = gr.Radio(
                             choices=list(MODELS.keys()),
                             value=DEFAULT_MODEL,
@@ -595,7 +589,6 @@ def build_ui() -> gr.Blocks:
                 btn_generate.click(
                     generate_fn,
                     inputs=[
-                        api_key_gen,
                         model_radio,
                         prompt_input,
                         ratio_dropdown,
