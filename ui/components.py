@@ -312,6 +312,23 @@ def build_download_zip_fn(gallery_state: GalleryState):
     return download_zip
 
 
+def build_download_single_fn(gallery_state: GalleryState):
+    """선택된 이미지를 원본 PNG 파일로 다운로드하는 핸들러 팩토리"""
+
+    def download_single(idx: int):
+        success_items = [i for i in gallery_state.items if i.status == "success"]
+        if not (0 <= idx < len(success_items)):
+            gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
+            return None
+        item = success_items[idx]
+        if not item.image_path or not os.path.exists(item.image_path):
+            gr.Warning("이미지 파일을 찾을 수 없습니다.")
+            return None
+        return item.image_path
+
+    return download_single
+
+
 def build_clear_fn(gallery_state: GalleryState):
     def clear_gallery():
         gallery_state.clear()
@@ -548,7 +565,7 @@ def build_ui() -> gr.Blocks:
                 gr.Markdown("💡 이미지를 클릭해서 선택한 뒤 **🎬 영상화** 버튼을 눌러 영상을 생성할 수 있습니다.")
                 live_gallery = gr.Gallery(
                     label="생성된 이미지",
-                    columns=3,
+                    columns=4,
                     height=500,
                     object_fit="contain",
                 )
@@ -559,11 +576,17 @@ def build_ui() -> gr.Blocks:
                         interactive=False,
                         scale=3,
                     )
+                    btn_download_single_gen = gr.Button(
+                        "📥 PNG 다운로드",
+                        variant="secondary",
+                        scale=1,
+                    )
                     btn_make_video_gen = gr.Button(
                         "🎬 영상화",
                         variant="secondary",
                         scale=1,
                     )
+                single_png_output_gen = gr.File(label="PNG 다운로드", visible=True)
 
                 # 모델 선택 변경 시 설명 업데이트
                 def update_model_info(m):
@@ -605,6 +628,13 @@ def build_ui() -> gr.Blocks:
                 live_gallery.select(
                     on_gen_gallery_select,
                     outputs=[selected_img_idx_gen, gen_selected_info],
+                )
+
+                download_single_gen_fn = build_download_single_fn(gallery_state)
+                btn_download_single_gen.click(
+                    download_single_gen_fn,
+                    inputs=[selected_img_idx_gen],
+                    outputs=[single_png_output_gen],
                 )
 
             # ── 탭 3: 영상 생성 (Kling) ──────────────────────────────────────
@@ -733,12 +763,18 @@ def build_ui() -> gr.Blocks:
                         interactive=False,
                         scale=3,
                     )
+                    btn_download_single_gallery = gr.Button(
+                        "📥 PNG 다운로드",
+                        variant="secondary",
+                        scale=1,
+                    )
                     btn_make_video_gallery = gr.Button(
                         "🎬 영상화",
                         variant="secondary",
                         scale=1,
                     )
 
+                single_png_output_gallery = gr.File(label="PNG 다운로드", visible=True)
                 zip_file_output = gr.File(label="ZIP 다운로드", visible=True)
 
                 def refresh_gallery():
@@ -758,6 +794,13 @@ def build_ui() -> gr.Blocks:
                 full_gallery.select(
                     on_gallery_tab_select,
                     outputs=[selected_img_idx_gallery, gallery_selected_info],
+                )
+
+                download_single_gallery_fn = build_download_single_fn(gallery_state)
+                btn_download_single_gallery.click(
+                    download_single_gallery_fn,
+                    inputs=[selected_img_idx_gallery],
+                    outputs=[single_png_output_gallery],
                 )
 
         # ── 탭 간 "영상화" 버튼 공통 핸들러 ─────────────────────────────────

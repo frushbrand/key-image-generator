@@ -1,8 +1,8 @@
-# 화질 설정
+# 화질 설정 (해상도 기준 표기, 16:9 기준 참고 해상도)
 QUALITY_OPTIONS = {
-    "Standard": {"width_multiplier": 1.0, "description": "기본 화질"},
-    "HD": {"width_multiplier": 1.5, "description": "고화질"},
-    "Ultra HD": {"width_multiplier": 2.0, "description": "초고화질"},
+    "720p": {"width_multiplier": 1.0, "description": "1408×792 (16:9 기준)"},
+    "1080p": {"width_multiplier": 1.5, "description": "2112×1188 (16:9 기준)"},
+    "2K": {"width_multiplier": 2.0, "description": "2816×1584 (16:9 기준)"},
 }
 
 # 화면 비율 설정 (width, height 기준 픽셀, 나노 바나나 2 기준)
@@ -66,7 +66,7 @@ KLING_DEFAULT_RATIO = "16:9"
 
 DEFAULT_MODEL = "나노 바나나 2"
 DEFAULT_RATIO = "16:9"
-DEFAULT_QUALITY = "HD"
+DEFAULT_QUALITY = "1080p"
 DEFAULT_COUNT = 1
 MAX_COUNT = 20
 MAX_REFERENCE_IMAGES = 10
