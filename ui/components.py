@@ -338,27 +338,35 @@ def build_ui() -> gr.Blocks:
             try { localStorage.setItem(TAB_KEY, String(idx)); } catch(e) {}
         }
 
+        function getTabButtons() {
+            // Gradio 5: role="tab" 속성 사용
+            var byRole = document.querySelectorAll('[role="tab"]');
+            if (byRole.length > 0) return Array.from(byRole);
+            // Fallback: older Gradio class
+            return Array.from(document.querySelectorAll('.tab-nav button'));
+        }
+
         function restoreTab() {
             try {
                 var idx = localStorage.getItem(TAB_KEY);
                 if (idx === null) return;
                 var attempt = 0;
-                // Poll up to 40 times (4 seconds) waiting for Gradio to render tab buttons
+                // Poll up to 60 times (6 seconds) waiting for Gradio to render tab buttons
                 var iv = setInterval(function() {
-                    var buttons = document.querySelectorAll('.tab-nav button');
+                    var buttons = getTabButtons();
                     if (buttons.length > parseInt(idx)) {
                         buttons[parseInt(idx)].click();
                         clearInterval(iv);
                     }
-                    if (++attempt > 40) clearInterval(iv);
+                    if (++attempt > 60) clearInterval(iv);
                 }, 100);
             } catch(e) {}
         }
 
         document.addEventListener('click', function(e) {
-            var btn = e.target.closest('.tab-nav button');
+            var btn = e.target.closest('[role="tab"]') || e.target.closest('.tab-nav button');
             if (btn) {
-                var buttons = Array.from(document.querySelectorAll('.tab-nav button'));
+                var buttons = getTabButtons();
                 var idx = buttons.indexOf(btn);
                 if (idx >= 0) saveTab(idx);
             }
@@ -366,12 +374,10 @@ def build_ui() -> gr.Blocks:
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', function() {
-                // 300ms delay gives Gradio time to finish rendering the tab UI
-                setTimeout(restoreTab, 300);
+                setTimeout(restoreTab, 500);
             });
         } else {
-            // 300ms delay gives Gradio time to finish rendering the tab UI
-            setTimeout(restoreTab, 300);
+            setTimeout(restoreTab, 500);
         }
     })();
     </script>
@@ -481,7 +487,7 @@ def build_ui() -> gr.Blocks:
                             choices=list(MODELS.keys()),
                             value=DEFAULT_MODEL,
                             label="모델 선택",
-                            info="나노 바나나 2: 빠름 / 나노 바나나 프로: 고품질",
+                            info="나노 바나나 2: 고급 모델 / 나노 바나나 프로: 가성비 모델",
                         )
 
                         ratio_dropdown = gr.Dropdown(
