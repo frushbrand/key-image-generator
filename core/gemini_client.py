@@ -17,8 +17,6 @@ from PIL import Image
 
 from config.settings import (
     MODELS,
-    ASPECT_RATIOS,
-    QUALITY_OPTIONS,
     MAX_RETRY,
 )
 
@@ -65,23 +63,6 @@ def generate_with_nano_banana_2(
     """
     client = _make_client(api_key)
 
-    ratio_cfg = ASPECT_RATIOS[ratio]
-    quality_cfg = QUALITY_OPTIONS[quality]
-    width = int(ratio_cfg["width"] * quality_cfg["width_multiplier"])
-    height = int(ratio_cfg["height"] * quality_cfg["width_multiplier"])
-
-    # 한국어 감지 시 정확한 한글 렌더링 지시 추가
-    _has_korean = any('\uAC00' <= c <= '\uD7A3' for c in prompt)
-    _korean_instr = (
-        "\n[중요: 이미지 내에 한국어 텍스트가 포함된 경우, 한글 글자를 정확하고 선명하게 렌더링해주세요.]"
-        if _has_korean else ""
-    )
-
-    full_prompt = (
-        f"{prompt}{_korean_instr}\n\n"
-        f"Image should be {width}x{height} pixels, aspect ratio {ratio}."
-    )
-
     contents: list = []
 
     # 레퍼런스 이미지 추가
@@ -93,7 +74,7 @@ def generate_with_nano_banana_2(
             )
         contents.append("\nNow generate the requested image:\n")
 
-    contents.append(full_prompt)
+    contents.append(prompt)
 
     response = client.models.generate_content(
         model=MODELS["나노 바나나 2"]["api_name"],
@@ -129,22 +110,6 @@ def generate_with_nano_banana_pro(
     """
     client = _make_client(api_key)
 
-    ratio_cfg = ASPECT_RATIOS[ratio]
-    quality_cfg = QUALITY_OPTIONS[quality]
-    width = int(ratio_cfg["width"] * quality_cfg["width_multiplier"])
-    height = int(ratio_cfg["height"] * quality_cfg["width_multiplier"])
-
-    _has_korean = any('\uAC00' <= c <= '\uD7A3' for c in prompt)
-    _korean_instr = (
-        "\n[중요: 이미지 내에 한국어 텍스트가 포함된 경우, 한글 글자를 정확하고 선명하게 렌더링해주세요.]"
-        if _has_korean else ""
-    )
-
-    full_prompt = (
-        f"{prompt}{_korean_instr}\n\n"
-        f"Image should be {width}x{height} pixels, aspect ratio {ratio}."
-    )
-
     contents: list = []
 
     if reference_images:
@@ -155,7 +120,7 @@ def generate_with_nano_banana_pro(
             )
         contents.append("\nNow generate the requested image:\n")
 
-    contents.append(full_prompt)
+    contents.append(prompt)
 
     response = client.models.generate_content(
         model=MODELS["나노 바나나 프로"]["api_name"],
@@ -190,22 +155,6 @@ def generate_with_nano_banana(
     """
     client = _make_client(api_key)
 
-    ratio_cfg = ASPECT_RATIOS[ratio]
-    quality_cfg = QUALITY_OPTIONS[quality]
-    width = int(ratio_cfg["width"] * quality_cfg["width_multiplier"])
-    height = int(ratio_cfg["height"] * quality_cfg["width_multiplier"])
-
-    _has_korean = any('\uAC00' <= c <= '\uD7A3' for c in prompt)
-    _korean_instr = (
-        "\n[중요: 이미지 내에 한국어 텍스트가 포함된 경우, 한글 글자를 정확하고 선명하게 렌더링해주세요.]"
-        if _has_korean else ""
-    )
-
-    full_prompt = (
-        f"{prompt}{_korean_instr}\n\n"
-        f"Image should be {width}x{height} pixels, aspect ratio {ratio}."
-    )
-
     contents: list = []
 
     if reference_images:
@@ -216,7 +165,7 @@ def generate_with_nano_banana(
             )
         contents.append("\nNow generate the requested image:\n")
 
-    contents.append(full_prompt)
+    contents.append(prompt)
 
     response = client.models.generate_content(
         model=MODELS["나노 바나나"]["api_name"],
