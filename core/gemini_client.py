@@ -33,7 +33,7 @@ def validate_api_key(api_key: str) -> tuple[bool, str]:
     try:
         client = _make_client(api_key.strip())
         # 모델 목록 조회로 키 유효성 확인 (실제 생성 호출 없이도 가능)
-        client.models.get(model="gemini-2.0-flash")
+        client.models.get(model="gemini-2.5-flash")
         return True, "✅ API 키가 유효합니다."
     except Exception as e:
         err = str(e)
