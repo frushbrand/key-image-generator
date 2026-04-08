@@ -55,6 +55,7 @@ def save_image(
     ratio: str,
     prompt: str,
     quality: str,
+    reference_image_paths: Optional[list] = None,
 ) -> tuple[str, str]:
     """
     이미지를 outputs/YYYY-MM-DD/ 경로에 저장하고 메타데이터 JSON을 함께 저장합니다.
@@ -81,6 +82,7 @@ def save_image(
         "prompt": prompt,
         "filename": filename,
         "size": list(image.size),
+        "reference_image_paths": reference_image_paths or [],
     }
     with open(str(meta_path), "w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
@@ -183,6 +185,7 @@ def load_existing_outputs() -> list[dict]:
                         "ratio": meta.get("ratio", ""),
                         "quality": meta.get("quality", ""),
                         "prompt": meta.get("prompt", ""),
+                        "reference_image_paths": meta.get("reference_image_paths", []),
                     }
                 )
             except Exception:

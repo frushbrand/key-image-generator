@@ -286,23 +286,34 @@ def build_generate_fn(gallery_state: GalleryState):
             return gallery_state.to_gradio_gallery(), gallery_state.get_summary()
 
         count = max(1, min(int(count), MAX_COUNT))
-        progress(0, desc="준비 중...")
+        import time as _time
+        start_time = _time.time()
+        progress(0.02, desc=f"이미지 {count}장 생성 시작... (보통 30~90초 소요)")
 
         # 레퍼런스 이미지 로드
         ref_pil_images: list[Image.Image] = []
+        ref_paths: list[str] = []
         if ref_images:
-            paths = [r if isinstance(r, str) else r.path for r in ref_images if r is not None]
-            ref_pil_images = load_reference_images(paths[:MAX_REFERENCE_IMAGES])
+            ref_paths = [r if isinstance(r, str) else r.path for r in ref_images if r is not None]
+            ref_pil_images = load_reference_images(ref_paths[:MAX_REFERENCE_IMAGES])
+            ref_paths = ref_paths[:MAX_REFERENCE_IMAGES]
 
         completed = [0]
         new_items: list[GalleryItem] = []
 
         def on_progress(idx, img, err):
             completed[0] += 1
-            progress(completed[0] / count, desc=f"생성 중... {completed[0]}/{count}")
+            elapsed = int(_time.time() - start_time)
+            progress(
+                completed[0] / count,
+                desc=f"생성 중... {completed[0]}/{count}장 완료 | ⏱️ {elapsed}초 경과",
+            )
             offset = len(gallery_state.items)
             if img is not None:
-                img_path, _ = save_image(img, model_name, ratio, prompt, quality)
+                img_path, _ = save_image(
+                    img, model_name, ratio, prompt, quality,
+                    reference_image_paths=ref_paths,
+                )
                 item = GalleryItem(
                     image=img,
                     image_path=img_path,
@@ -312,6 +323,7 @@ def build_generate_fn(gallery_state: GalleryState):
                     prompt=prompt,
                     index=offset + idx,
                     status="success",
+                    reference_image_paths=ref_paths,
                 )
             else:
                 item = GalleryItem(
@@ -337,17 +349,16 @@ def build_generate_fn(gallery_state: GalleryState):
             reference_images=ref_pil_images if ref_pil_images else None,
             progress_callback=on_progress,
         )
-
-        # 갤러리 상태에 추가 (index 순 정렬)
         new_items.sort(key=lambda x: x.index)
         for item in new_items:
             gallery_state.add(item)
 
         progress(1.0, desc="완료!")
+        elapsed_total = int(_time.time() - start_time)
 
         # 실패 항목 오류 메시지 수집
         failed_items = [item for item in new_items if item.status == "failed"]
-        status_msg = gallery_state.get_summary()
+        status_msg = gallery_state.get_summary() + f" (⏱️ {elapsed_total}초 소요)"
         if failed_items:
             error_details = "\n".join(
                 f"  • #{item.index + 1}: {item.error}" for item in failed_items
@@ -443,6 +454,7 @@ def build_ui() -> gr.Blocks:
                 prompt=entry["prompt"],
                 index=i,
                 status="success",
+                reference_image_paths=entry.get("reference_image_paths", []),
             )
         )
 
@@ -578,12 +590,28 @@ def build_ui() -> gr.Blocks:
             if (changed && window.__msUpdateHover) window.__msUpdateHover(cfg.id, newIdx);
         });
         ov.addEventListener('mouseleave', hideOv);
+
+        // 오버레이 버튼 클릭: 라이트박스 열지 않고 서버 액션 직접 트리거
+        function triggerOverlayAction(gid, key, idx) {
+            var tbMap = {
+                'live-gallery': {dl:'overlay-dl-gen', vid:'overlay-vid-gen', ref:'overlay-ref-gen'},
+                'full-gallery': {dl:'overlay-dl-gallery', vid:'overlay-vid-gallery', ref:'overlay-ref-gallery'}
+            };
+            var tbId = tbMap[gid] && tbMap[gid][key]; if (!tbId) return;
+            var wrapper = document.getElementById(tbId); if (!wrapper) return;
+            var inp = wrapper.querySelector('input[type="text"],textarea'); if (!inp) return;
+            // idx:timestamp 형식으로 설정하여 같은 인덱스 반복 클릭도 이벤트 발생
+            var val = idx + ':' + Date.now();
+            try {
+                Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(inp, val);
+            } catch(e2) { inp.value = val; }
+            inp.dispatchEvent(new Event('input', {bubbles: true}));
+            inp.dispatchEvent(new Event('change', {bubbles: true}));
+        }
         ov.addEventListener('mousedown', function(e) {
             var btn = e.target.closest('[data-k]'); if (!btn || !curItem || !curCfg) return;
             e.preventDefault(); e.stopPropagation();
-            var tid = curCfg[btn.dataset.k];
-            (curItem.querySelector('button') || curItem.querySelector('img') || curItem).click();
-            setTimeout(function() { gClick(tid); }, 250);
+            triggerOverlayAction(curCfg.id, btn.dataset.k, curItemIdx);
         });
         window.addEventListener('scroll', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); }, true);
         window.addEventListener('resize', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); });
@@ -718,6 +746,28 @@ def build_ui() -> gr.Blocks:
         });
         setTimeout(attachObs, 800);
         setTimeout(function() { GIDS.forEach(refreshOverlays); }, 1500);
+
+        // 다중 선택 모드: 하나 이상 선택된 상태에서 이미지 클릭 시 추가 선택 (라이트박스 방지)
+        GIDS.forEach(function(gid) {
+            function attachClickIntercept() {
+                var g = document.getElementById(gid);
+                if (!g) { setTimeout(attachClickIntercept, 500); return; }
+                g.addEventListener('click', function(e) {
+                    if (sels[gid].size === 0) return; // 선택 없으면 기본 동작 유지
+                    var items = getItems(gid);
+                    var item = e.target.closest('[data-testid="thumbnail"]')
+                        || e.target.closest('.thumbnail-item')
+                        || e.target.closest('[class*="thumbnail-item"]');
+                    if (!item) return;
+                    var idx = items.indexOf(item);
+                    if (idx < 0) return;
+                    e.preventDefault(); e.stopPropagation();
+                    if (sels[gid].has(idx)) sels[gid].delete(idx); else sels[gid].add(idx);
+                    refreshOverlays(gid); syncTextbox(gid);
+                }, true); // capture phase: Gradio 이벤트보다 먼저 처리
+            }
+            setTimeout(attachClickIntercept, 1000);
+        });
     })();
 
     // ── Ctrl+Enter 단축키: 이미지/영상 생성 ──────────────────────────────
@@ -809,9 +859,13 @@ def build_ui() -> gr.Blocks:
             transform: scale(1.08);
         }
 
-        /* 공유(Share) 버튼 숨김 — 공유 기능 미사용 */
+        /* 공유(Share) 버튼 완전 숨김 */
         button[aria-label="Share"],
-        button[title="Share"] {
+        button[title="Share"],
+        [data-testid="share-button"],
+        .share-button,
+        .lightbox button[aria-label="Share"],
+        [data-testid="lightbox"] button[aria-label="Share"] {
             display: none !important;
         }
 
@@ -961,9 +1015,9 @@ def build_ui() -> gr.Blocks:
                         )
 
                         ref_preview = gr.Gallery(
-                            label="레퍼런스 미리보기",
+                            label="레퍼런스 미리보기 (썸네일 클릭 시 해당 이미지 삭제 🗑️)",
                             columns=2,
-                            height=300,
+                            height=420,
                             visible=False,
                         )
 
@@ -1013,6 +1067,7 @@ def build_ui() -> gr.Blocks:
                         value="이미지를 클릭하여 선택하세요",
                         interactive=False,
                         scale=3,
+                        visible=False,
                     )
                     btn_download_single_gen = gr.Button(
                         "📥 PNG 다운로드",
@@ -1053,6 +1108,22 @@ def build_ui() -> gr.Blocks:
                 )
                 selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", visible=False, elem_id="selected-zip-gen")
 
+                # 오버레이 액션 트리거 (overlay 버튼 → 서버 핸들러 직접 연결용)
+                overlay_dl_gen = gr.Textbox(visible=False, elem_id="overlay-dl-gen", interactive=True)
+                overlay_vid_gen = gr.Textbox(visible=False, elem_id="overlay-vid-gen", interactive=True)
+                overlay_ref_gen = gr.Textbox(visible=False, elem_id="overlay-ref-gen", interactive=True)
+
+                # 상세보기 레퍼런스 이미지 패널
+                with gr.Group(visible=False) as detail_panel_gen:
+                    gr.Markdown("#### 🖼️ 이 이미지 생성에 사용된 레퍼런스")
+                    detail_ref_gallery_gen = gr.Gallery(
+                        label="레퍼런스 이미지",
+                        columns=4,
+                        height=220,
+                        object_fit="contain",
+                    )
+
+
                 # 모델 선택 변경 시 설명 업데이트
                 def update_model_info(m):
                     return f"**{m}**: {MODELS[m]['description']}"
@@ -1067,9 +1138,8 @@ def build_ui() -> gr.Blocks:
                             if not p:
                                 continue
                             with Image.open(str(p)) as img:
-                                # draft()로 JPEG 고화질 원본 전체 디코딩을 건너뜀 (속도 향상)
-                                img.draft('RGB', (128, 128))
-                                img.thumbnail((128, 128), Image.BILINEAR)
+                                img.draft('RGB', (256, 256))
+                                img.thumbnail((256, 256), Image.LANCZOS)
                                 thumbs.append(img.convert("RGB").copy())
                         except Exception:
                             continue
@@ -1102,6 +1172,31 @@ def build_ui() -> gr.Blocks:
 
                     return gr.update(value=combined), gr.update(value=None)
 
+                def on_ref_preview_delete(evt: gr.SelectData, current_files):
+                    """레퍼런스 미리보기에서 클릭한 이미지를 제거합니다."""
+                    idx = evt.index
+                    if not current_files:
+                        return gr.update(value=None), gr.update(visible=False, value=[])
+                    current_paths = [
+                        f if isinstance(f, str) else f.path
+                        for f in current_files if f is not None
+                    ]
+                    if not (0 <= idx < len(current_paths)):
+                        return gr.update(), gr.update()
+                    new_paths = current_paths[:idx] + current_paths[idx + 1:]
+                    if not new_paths:
+                        return gr.update(value=None), gr.update(visible=False, value=[])
+                    thumbs = []
+                    for p in new_paths:
+                        try:
+                            with Image.open(str(p)) as img:
+                                img.draft('RGB', (256, 256))
+                                img.thumbnail((256, 256), Image.LANCZOS)
+                                thumbs.append(img.convert("RGB").copy())
+                        except Exception:
+                            continue
+                    return gr.update(value=new_paths), gr.update(visible=bool(thumbs), value=thumbs)
+
                 model_radio.change(update_model_info, inputs=[model_radio], outputs=[model_info])
                 ref_image_upload.change(
                     update_ref_visibility,
@@ -1120,6 +1215,11 @@ def build_ui() -> gr.Blocks:
                 btn_clear_refs.click(
                     lambda: (gr.update(value=None), gr.update(value=None), gr.update(visible=False, value=[])),
                     outputs=[ref_image_upload, ref_image_add, ref_preview],
+                )
+                ref_preview.select(
+                    on_ref_preview_delete,
+                    inputs=[ref_image_upload],
+                    outputs=[ref_image_upload, ref_preview],
                 )
 
                 generate_fn = build_generate_fn(gallery_state)
@@ -1140,12 +1240,28 @@ def build_ui() -> gr.Blocks:
                     outputs=[ref_preview],
                 )
 
+                def _load_ref_detail_images(item):
+                    """GalleryItem에서 레퍼런스 이미지를 고화질로 로드합니다."""
+                    if item is None or not item.reference_image_paths:
+                        return [], False
+                    imgs = []
+                    for rp in item.reference_image_paths:
+                        try:
+                            if os.path.exists(rp):
+                                imgs.append(Image.open(rp).convert("RGB"))
+                        except Exception:
+                            continue
+                    return imgs, bool(imgs)
+
                 def on_gen_gallery_select(evt: gr.SelectData):
-                    return evt.index, f"#{evt.index + 1}번 이미지 선택됨"
+                    idx = evt.index
+                    item = gallery_state.get_success_item_by_visual_index(idx)
+                    ref_imgs, has_refs = _load_ref_detail_images(item)
+                    return idx, ref_imgs, gr.update(visible=has_refs)
 
                 live_gallery.select(
                     on_gen_gallery_select,
-                    outputs=[selected_img_idx_gen, gen_selected_info],
+                    outputs=[selected_img_idx_gen, detail_ref_gallery_gen, detail_panel_gen],
                 )
 
                 def refresh_live_gallery():
@@ -1171,6 +1287,30 @@ def build_ui() -> gr.Blocks:
                     download_selected_gen_fn,
                     inputs=[ms_state_gen],
                     outputs=[selected_zip_output_gen],
+                )
+
+                # 오버레이 액션 핸들러 연결
+                def _parse_overlay_idx(val: str) -> int:
+                    """'idx:timestamp' 형식 또는 단순 숫자에서 인덱스 추출"""
+                    try:
+                        return int(val.split(":")[0])
+                    except Exception:
+                        return -1
+
+                overlay_dl_gen.input(
+                    lambda val: download_single_gen_fn(_parse_overlay_idx(val)),
+                    inputs=[overlay_dl_gen],
+                    outputs=[single_png_output_gen],
+                )
+                overlay_vid_gen.input(
+                    lambda val: on_make_video(_parse_overlay_idx(val)),
+                    inputs=[overlay_vid_gen],
+                    outputs=[ref_image_vid, main_tabs],
+                )
+                overlay_ref_gen.input(
+                    lambda val, files: _use_as_ref(_parse_overlay_idx(val), files),
+                    inputs=[overlay_ref_gen, ref_image_upload],
+                    outputs=[ref_image_upload],
                 )
 
             # ── 탭 3: 영상 생성 (Kling) ──────────────────────────────────────
@@ -1272,9 +1412,9 @@ def build_ui() -> gr.Blocks:
                         )
 
                         enable_audio_checkbox = gr.Checkbox(
-                            label="🔊 오디오 생성 사용 (Kling 3 Omni 모델 전용)",
+                            label="🔊 오디오 생성 사용 (Kling v3 / v3 Omni 지원)",
                             value=False,
-                            info="Kling 3 Omni 모델에서 오디오를 함께 생성합니다. 다른 모델에서는 무시됩니다.",
+                            info="Kling v3 및 Kling 3 Omni 모델에서 오디오를 함께 생성합니다.",
                         )
 
                         btn_generate_video = gr.Button(
@@ -1452,6 +1592,7 @@ def build_ui() -> gr.Blocks:
                         value="이미지를 클릭하여 선택하세요",
                         interactive=False,
                         scale=3,
+                        visible=False,
                     )
                     btn_download_single_gallery = gr.Button(
                         "📥 PNG 다운로드",
@@ -1494,6 +1635,22 @@ def build_ui() -> gr.Blocks:
                 )
                 selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", visible=False, elem_id="selected-zip-gallery")
 
+                # 오버레이 액션 트리거 (갤러리 탭)
+                overlay_dl_gallery = gr.Textbox(visible=False, elem_id="overlay-dl-gallery", interactive=True)
+                overlay_vid_gallery = gr.Textbox(visible=False, elem_id="overlay-vid-gallery", interactive=True)
+                overlay_ref_gallery = gr.Textbox(visible=False, elem_id="overlay-ref-gallery", interactive=True)
+
+                # 상세보기 레퍼런스 이미지 패널 (갤러리 탭)
+                with gr.Group(visible=False) as detail_panel_gallery:
+                    gr.Markdown("#### 🖼️ 이 이미지 생성에 사용된 레퍼런스")
+                    detail_ref_gallery_full = gr.Gallery(
+                        label="레퍼런스 이미지",
+                        columns=4,
+                        height=220,
+                        object_fit="contain",
+                    )
+
+
                 def refresh_gallery():
                     return (
                         gallery_state.to_gradio_gallery(),
@@ -1510,11 +1667,14 @@ def build_ui() -> gr.Blocks:
                 btn_clear.click(clear_fn, outputs=[full_gallery, gallery_status, zip_file_output])
 
                 def on_gallery_tab_select(evt: gr.SelectData):
-                    return evt.index, f"#{evt.index + 1}번 이미지 선택됨"
+                    idx = evt.index
+                    item = gallery_state.get_success_item_by_visual_index(idx)
+                    ref_imgs, has_refs = _load_ref_detail_images(item)
+                    return idx, ref_imgs, gr.update(visible=has_refs)
 
                 full_gallery.select(
                     on_gallery_tab_select,
-                    outputs=[selected_img_idx_gallery, gallery_selected_info],
+                    outputs=[selected_img_idx_gallery, detail_ref_gallery_full, detail_panel_gallery],
                 )
 
                 download_single_gallery_fn = build_download_single_fn(gallery_state)
@@ -1535,6 +1695,22 @@ def build_ui() -> gr.Blocks:
                     download_selected_gallery_fn,
                     inputs=[ms_state_gallery],
                     outputs=[selected_zip_output_gallery],
+                )
+
+                overlay_dl_gallery.input(
+                    lambda val: download_single_gallery_fn(_parse_overlay_idx(val)),
+                    inputs=[overlay_dl_gallery],
+                    outputs=[single_png_output_gallery],
+                )
+                overlay_vid_gallery.input(
+                    lambda val: on_make_video(_parse_overlay_idx(val)),
+                    inputs=[overlay_vid_gallery],
+                    outputs=[ref_image_vid, main_tabs],
+                )
+                overlay_ref_gallery.input(
+                    lambda val, files: _use_as_ref(_parse_overlay_idx(val), files),
+                    inputs=[overlay_ref_gallery, ref_image_upload],
+                    outputs=[ref_image_upload],
                 )
 
         # ── 탭 간 "영상화" 버튼 공통 핸들러 ─────────────────────────────────
