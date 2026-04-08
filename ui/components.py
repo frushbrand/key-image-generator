@@ -747,7 +747,7 @@ def build_ui() -> gr.Blocks:
 
     // ── 다운로드 파일 위젯 자동 실행 (별도 창 없이 바로 다운로드) ──────────
     (function() {
-        var DL_IDS = ['single-png-gen', 'selected-zip-gen', 'single-png-gallery', 'selected-zip-gallery', 'full-zip-gallery'];
+        var DL_IDS = ['single-png-gen', 'selected-zip-gen', 'single-png-gallery', 'selected-zip-gallery', 'full-zip-gallery', 'selected-videos-zip', 'all-videos-zip'];
         DL_IDS.forEach(function(id) {
             var attempts = 0;
             (function trySetup() {
@@ -790,8 +790,7 @@ def build_ui() -> gr.Blocks:
         .lightbox button,
         .lightbox .icon-button,
         [data-testid="lightbox"] button,
-        .gallery-container .icon-button,
-        button.icon-button {
+        .gallery-container .icon-button {
             width: 48px !important;
             height: 48px !important;
             font-size: 1.4rem !important;
@@ -799,13 +798,10 @@ def build_ui() -> gr.Blocks:
         }
         .lightbox svg,
         [data-testid="lightbox"] svg,
-        .gallery-container button svg,
-        button.icon-button svg {
+        .gallery-container button svg {
             width: 28px !important;
             height: 28px !important;
         }
-        /* 전체화면·닫기·이전·다음 버튼 공통 */
-        .icon-button { padding: 8px !important; }
 
         /* 호버 플로팅 오버레이 버튼 hover 효과 */
         #gha-ov button:hover {
@@ -813,77 +809,23 @@ def build_ui() -> gr.Blocks:
             transform: scale(1.08);
         }
 
-        /* 레퍼런스 파일 삭제 버튼이 다른 버튼에 가려지지 않도록 */
-        [data-testid="file-upload"],
-        [data-testid="file-upload"] > div,
-        .gradio-file,
-        .gradio-file > .wrap,
-        .file-upload .file-preview,
-        .file-upload .file-preview-holder,
-        .gradio-file .file-preview,
-        .gradio-file .file-preview-holder,
-        .file-upload .wrap,
-        .gradio-file .wrap {
-            overflow: visible !important;
-        }
-        /* 파일 목록 아이템을 flex 행으로 */
-        [data-testid="file-upload"] li,
-        .gradio-file li,
-        .file-upload li {
-            display: flex !important;
-            flex-direction: row !important;
-            align-items: center !important;
-            overflow: visible !important;
-            position: relative !important;
-            z-index: 5 !important;
-            min-height: 32px !important;
-        }
-        /* 파일명 영역 */
-        [data-testid="file-upload"] li > span:first-child,
-        [data-testid="file-upload"] li > a:first-child,
-        .gradio-file li > span:first-child,
-        .file-upload .file-name {
-            flex: 1 !important;
-            overflow: hidden !important;
-            text-overflow: ellipsis !important;
-            white-space: nowrap !important;
-            margin-right: 4px !important;
-        }
-        /* 개별 파일 삭제(×) 버튼 */
-        [data-testid="file-upload"] li button,
-        .gradio-file li button,
-        .file-upload .delete,
-        .gradio-file .delete,
-        .file-upload button.delete,
-        .gradio-file button.delete {
-            flex-shrink: 0 !important;
-            position: relative !important;
-            z-index: 30 !important;
-            opacity: 1 !important;
-            visibility: visible !important;
-            pointer-events: auto !important;
-            min-width: 24px !important;
-            min-height: 24px !important;
-            display: flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-        }
-        /* 파일 컴포넌트 헤더 아이콘 버튼(업로드·전체삭제) 숨김 */
-        [data-testid="file-upload"] .icon-button,
-        .gradio-file .icon-button,
-        .file-upload .icon-button {
+        /* 공유(Share) 버튼 숨김 — 공유 기능 미사용 */
+        button[aria-label="Share"],
+        button[title="Share"] {
             display: none !important;
         }
-        /* 파일 목록 아이템 내 개별 삭제 버튼은 표시 유지 */
-        [data-testid="file-upload"] li button,
-        [data-testid="file-upload"] li .icon-button,
-        .gradio-file li button,
-        .gradio-file li .icon-button,
-        .file-upload li button {
-            display: flex !important;
-            pointer-events: auto !important;
+
+        /* 레퍼런스 이미지 파일 업로드 헤더 아이콘 버튼 숨김 (업로드 추가·전체 삭제) */
+        #ref-upload-main .icon-button-wrapper,
+        #ref-upload-add .icon-button-wrapper {
+            display: none !important;
+        }
+
+        /* 파일 행 내 개별 삭제(×) 버튼은 표시 유지 */
+        .label-clear-button {
             opacity: 1 !important;
             visibility: visible !important;
+            pointer-events: auto !important;
         }
         """,
     ) as demo:
@@ -894,7 +836,7 @@ def build_ui() -> gr.Blocks:
             <div class="subtitle-text">나노 바나나 2 / 나노 바나나 프로 모델로 영상 키 이미지를 생성하고, Kling AI로 영상을 만들어보세요.</div>
             """
         )
-        gr.HTML(TAB_PERSIST_JS)
+        gr.HTML(value="", head=TAB_PERSIST_JS)
 
         # 탭 간 이미지 전달용 상태
         selected_img_idx_gen = gr.State(-1)      # 이미지 생성 탭 갤러리 선택 인덱스
@@ -1002,12 +944,14 @@ def build_ui() -> gr.Blocks:
                             label=f"레퍼런스 이미지 (최대 {MAX_REFERENCE_IMAGES}장)",
                             file_count="multiple",
                             file_types=["image"],
+                            elem_id="ref-upload-main",
                         )
 
                         ref_image_add = gr.File(
                             label="➕ 레퍼런스 이미지 추가 (현재 목록에 추가됩니다)",
                             file_count="multiple",
                             file_types=["image"],
+                            elem_id="ref-upload-add",
                         )
 
                         btn_clear_refs = gr.Button(
@@ -1019,7 +963,7 @@ def build_ui() -> gr.Blocks:
                         ref_preview = gr.Gallery(
                             label="레퍼런스 미리보기",
                             columns=2,
-                            height=160,
+                            height=300,
                             visible=False,
                         )
 
@@ -1346,22 +1290,26 @@ def build_ui() -> gr.Blocks:
                             value="대기 중",
                         )
 
-                gr.Markdown("#### 🎥 생성된 영상")
-                video_output = gr.Video(label="생성 결과", height=720)
+                gr.Markdown("### 🎥 생성된 영상")
+                video_output = gr.Video(label="최근 생성 결과", height=480)
 
-                # ── 이전에 생성된 영상 목록 ──────────────────────────────────
-                gr.Markdown("#### 📹 이전에 생성된 영상 목록")
+                # ── 결과물 관리 창 ────────────────────────────────────────────
+                gr.Markdown("### 📹 결과물 관리")
+                gr.Markdown("💡 생성된 영상 목록에서 항목을 선택하여 재생하거나 ZIP으로 다운로드할 수 있습니다.")
                 existing_videos = load_existing_video_outputs()
                 _vid_choices = [(v["label"], v["path"]) for v in existing_videos]
 
                 with gr.Row():
-                    btn_refresh_videos = gr.Button("🔄 목록 새로고침", variant="secondary", size="sm", scale=1)
+                    btn_refresh_videos = gr.Button("🔄 새로고침", variant="secondary", scale=1)
                     btn_download_selected_videos = gr.Button(
-                        "📦 선택 영상 ZIP 다운로드", variant="secondary", size="sm", scale=1
+                        "📦 선택 ZIP", variant="secondary", scale=1
+                    )
+                    btn_download_all_videos = gr.Button(
+                        "⬇️ 전체 ZIP", variant="secondary", scale=1
                     )
                 video_gallery_dropdown = gr.Dropdown(
                     choices=_vid_choices,
-                    label="생성된 영상 (최신순) — 항목 선택 시 아래에서 재생, 여러 항목 선택 후 ZIP 다운로드 가능",
+                    label="생성된 영상 목록 (최신순) — 항목 선택 시 아래에서 재생, 여러 항목 선택 후 ZIP 다운로드 가능",
                     multiselect=True,
                     interactive=True,
                     value=None,
@@ -1371,7 +1319,8 @@ def build_ui() -> gr.Blocks:
                     height=480,
                     visible=bool(_vid_choices),
                 )
-                selected_videos_zip_output = gr.File(label="선택 영상 ZIP 다운로드", visible=True)
+                selected_videos_zip_output = gr.File(label="선택 영상 ZIP 다운로드", visible=False, elem_id="selected-videos-zip")
+                all_videos_zip_output = gr.File(label="전체 영상 ZIP 다운로드", visible=False, elem_id="all-videos-zip")
 
                 def _on_kling_model_change(model_label: str):
                     """Omni 모델(supports_video_reference=True)에서만 영상 레퍼런스 탭 표시"""
@@ -1453,6 +1402,22 @@ def build_ui() -> gr.Blocks:
                     download_selected_videos,
                     inputs=[video_gallery_dropdown],
                     outputs=[selected_videos_zip_output],
+                )
+
+                def download_all_videos():
+                    videos = load_existing_video_outputs()
+                    paths = [
+                        v["path"] for v in videos
+                        if v.get("path") and _is_safe_output_path(v["path"]) and os.path.exists(v["path"])
+                    ]
+                    if not paths:
+                        gr.Warning("다운로드할 영상이 없습니다.")
+                        return None
+                    return create_zip_from_paths(paths)
+
+                btn_download_all_videos.click(
+                    download_all_videos,
+                    outputs=[all_videos_zip_output],
                 )
 
             # ── 탭 4: 갤러리 & 다운로드 ──────────────────────────────────────
