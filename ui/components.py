@@ -26,6 +26,8 @@ from config.settings import (
     KLING_DEFAULT_MODEL,
     KLING_VIDEO_RATIOS,
     KLING_DEFAULT_RATIO,
+    KLING_QUALITY_OPTIONS,
+    KLING_DEFAULT_QUALITY,
 )
 from core.gemini_client import validate_api_key, generate_batch_images
 from core.kling_client import (
@@ -138,6 +140,7 @@ def build_unified_video_fn(gallery_state: GalleryState):
         duration: int,
         aspect_ratio: str,
         enable_audio: bool,
+        kling_quality: str,  # "720p (Standard)" | "1080p (Professional)"
         progress=gr.Progress(track_tqdm=True),
     ):
         cfg = load_settings()
@@ -149,7 +152,8 @@ def build_unified_video_fn(gallery_state: GalleryState):
 
         model_cfg = KLING_MODELS[model_label]
         api_model = model_cfg["api_name"]
-        mode_api = model_cfg["mode"]
+        # 선택한 화질로 모드 결정 (기본값은 모델별 기본 모드)
+        mode_api = KLING_QUALITY_OPTIONS.get(kling_quality, model_cfg["mode"])
 
         progress(0.05, desc="영상 생성 작업 요청 중...")
         endpoint = "image2video"
@@ -356,11 +360,10 @@ def build_download_single_fn(gallery_state: GalleryState):
     """선택된 이미지를 원본 PNG 파일로 다운로드하는 핸들러 팩토리"""
 
     def download_single(idx: int):
-        success_items = [i for i in gallery_state.items if i.status == "success"]
-        if not (0 <= idx < len(success_items)):
+        item = gallery_state.get_success_item_by_visual_index(idx)
+        if item is None:
             gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
             return None
-        item = success_items[idx]
         if not item.image_path or not os.path.exists(item.image_path):
             gr.Warning("이미지 파일을 찾을 수 없습니다.")
             return None
@@ -403,11 +406,10 @@ def build_ui() -> gr.Blocks:
 
     def _use_as_ref(idx: int, current_files: list):
         """선택된 이미지를 레퍼런스 이미지 업로드 칸에 추가하는 공용 핸들러."""
-        success_items = [i for i in gallery_state.items if i.status == "success"]
-        if not (0 <= idx < len(success_items)):
+        item = gallery_state.get_success_item_by_visual_index(idx)
+        if item is None:
             gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
             return gr.update()
-        item = success_items[idx]
 
         current_paths = []
         if current_files:
@@ -471,6 +473,80 @@ def build_ui() -> gr.Blocks:
             setTimeout(restoreTab, 500);
         }
     })();
+
+    // ── 갤러리 아이템 호버 오버레이 ────────────────────────────────────────
+    (function setupGalleryHoverActions() {
+        function clickGradioBtn(elemId) {
+            var el = document.getElementById(elemId);
+            if (!el) return;
+            var btn = el.tagName === 'BUTTON' ? el : el.querySelector('button');
+            if (btn) btn.click();
+        }
+
+        function setupGalleryItems(galleryId, downloadId, videoId, refId) {
+            var galleryEl = document.getElementById(galleryId);
+            if (!galleryEl) return;
+
+            // Gradio 5 gallery items selector
+            var items = galleryEl.querySelectorAll('.thumbnail-item');
+            if (!items.length) {
+                items = galleryEl.querySelectorAll('[class*="thumbnail"]');
+            }
+            if (!items.length) {
+                items = galleryEl.querySelectorAll('.grid-wrap > *');
+            }
+
+            items.forEach(function(item) {
+                if (item.classList.contains('gallery-item-with-overlay')) return;
+                if (item.querySelector('.gallery-hover-overlay')) return;
+
+                item.classList.add('gallery-item-with-overlay');
+                item.style.position = 'relative';
+
+                var overlay = document.createElement('div');
+                overlay.className = 'gallery-hover-overlay';
+
+                var actions = [
+                    { emoji: '⬇️', title: 'PNG 다운로드', id: downloadId },
+                    { emoji: '🎬', title: '영상 레퍼런스', id: videoId },
+                    { emoji: '🖼️', title: '이미지 레퍼런스', id: refId }
+                ];
+
+                actions.forEach(function(action) {
+                    var btn = document.createElement('button');
+                    btn.className = 'gallery-hover-action-btn';
+                    btn.innerHTML = action.emoji;
+                    btn.title = action.title;
+                    btn.addEventListener('mousedown', function(e) {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        // 갤러리 아이템 클릭으로 Gradio select 이벤트를 먼저 발생시킨 후
+                        var clickTarget = item.querySelector('button') || item.querySelector('img') || item;
+                        clickTarget.click();
+                        // Gradio가 select 이벤트를 처리하고 상태를 업데이트할 때까지 대기 (약 200ms)
+                        setTimeout(function() { clickGradioBtn(action.id); }, 220);
+                    });
+                    overlay.appendChild(btn);
+                });
+
+                item.appendChild(overlay);
+            });
+        }
+
+        function refreshAll() {
+            setupGalleryItems('live-gallery', 'btn-download-gen', 'btn-video-gen', 'btn-ref-gen');
+            setupGalleryItems('full-gallery', 'btn-download-gallery', 'btn-video-gallery', 'btn-ref-gallery');
+        }
+
+        var observer = new MutationObserver(refreshAll);
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        // Gradio renders gallery items asynchronously; retry at intervals
+        // to catch items that load after the initial page render.
+        setTimeout(refreshAll, 800);
+        setTimeout(refreshAll, 2000);
+        setTimeout(refreshAll, 4000);
+    })();
     </script>
     """
 
@@ -502,6 +578,49 @@ def build_ui() -> gr.Blocks:
         }
         /* 전체화면·닫기·이전·다음 버튼 공통 */
         .icon-button { padding: 8px !important; }
+
+        /* 갤러리 아이템 호버 오버레이 */
+        .gallery-item-with-overlay {
+            position: relative !important;
+        }
+        .gallery-hover-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.55);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            z-index: 20;
+            border-radius: 6px;
+            pointer-events: none;
+        }
+        .gallery-item-with-overlay:hover .gallery-hover-overlay {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .gallery-hover-action-btn {
+            background: rgba(255, 255, 255, 0.92) !important;
+            border: none !important;
+            border-radius: 8px !important;
+            padding: 6px 10px !important;
+            font-size: 1.15rem !important;
+            cursor: pointer !important;
+            line-height: 1 !important;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3) !important;
+            transition: background 0.1s, transform 0.1s !important;
+            min-width: 38px !important;
+            height: 38px !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+        }
+        .gallery-hover-action-btn:hover {
+            background: #fff !important;
+            transform: scale(1.12) !important;
+        }
         """,
     ) as demo:
 
@@ -621,6 +740,12 @@ def build_ui() -> gr.Blocks:
                             file_types=["image"],
                         )
 
+                        btn_clear_refs = gr.Button(
+                            "🗑️ 레퍼런스 전체 비우기",
+                            variant="secondary",
+                            size="sm",
+                        )
+
                         ref_preview = gr.Gallery(
                             label="레퍼런스 미리보기",
                             columns=2,
@@ -656,13 +781,14 @@ def build_ui() -> gr.Blocks:
 
                 # 결과 갤러리 (생성 탭 하단)
                 gr.Markdown("### 🖼️ 생성 결과")
-                gr.Markdown("💡 이미지를 클릭해서 선택한 뒤 **🎬 영상 레퍼런스** 또는 **🖼️ 이미지 레퍼런스** 버튼을 눌러 활용할 수 있습니다.")
+                gr.Markdown("💡 이미지 위에 마우스를 올리면 다운로드·영상 레퍼런스·이미지 레퍼런스 버튼이 나타납니다. 클릭하여 선택 후 아래 버튼을 사용할 수도 있습니다.")
                 live_gallery = gr.Gallery(
                     label="생성된 이미지",
                     columns=4,
-                    height=700,
+                    height=1050,
                     object_fit="contain",
                     value=gallery_state.to_gradio_gallery(),
+                    elem_id="live-gallery",
                 )
                 with gr.Row():
                     btn_refresh_gen = gr.Button("🔄 새로고침", variant="secondary", scale=1)
@@ -676,16 +802,19 @@ def build_ui() -> gr.Blocks:
                         "📥 PNG 다운로드",
                         variant="secondary",
                         scale=1,
+                        elem_id="btn-download-gen",
                     )
                     btn_make_video_gen = gr.Button(
                         "🎬 영상 레퍼런스",
                         variant="secondary",
                         scale=1,
+                        elem_id="btn-video-gen",
                     )
                     btn_use_as_ref_gen = gr.Button(
                         "🖼️ 이미지 레퍼런스",
                         variant="secondary",
                         scale=1,
+                        elem_id="btn-ref-gen",
                     )
                 single_png_output_gen = gr.File(label="PNG 다운로드", visible=True)
 
@@ -707,6 +836,10 @@ def build_ui() -> gr.Blocks:
                     update_ref_visibility,
                     inputs=[ref_image_upload],
                     outputs=[ref_preview],
+                )
+                btn_clear_refs.click(
+                    lambda: (gr.update(value=None), gr.update(visible=False, value=[])),
+                    outputs=[ref_image_upload, ref_preview],
                 )
 
                 generate_fn = build_generate_fn(gallery_state)
@@ -789,8 +922,8 @@ def build_ui() -> gr.Blocks:
                                     height=180,
                                 )
 
-                            with gr.Tab("🎬 영상 레퍼런스"):
-                                gr.Markdown("3~10초 분량의 레퍼런스 영상을 업로드하세요. 영상의 스타일·움직임을 참고하여 새로운 영상을 생성합니다.")
+                            with gr.Tab("🎬 영상 레퍼런스", visible=False) as video_ref_tab:
+                                gr.Markdown("3~10초 분량의 레퍼런스 영상을 업로드하세요. 영상의 스타일·움직임을 참고하여 새로운 영상을 생성합니다.\n\n⚠️ **Kling 3 Omni 모델에서만 사용 가능합니다.**")
                                 ref_video_vid = gr.Video(
                                     label="레퍼런스 영상 (3~10초)",
                                     height=200,
@@ -816,6 +949,13 @@ def build_ui() -> gr.Blocks:
                                 f"{k}: {v['description']}"
                                 for k, v in KLING_MODELS.items()
                             ),
+                        )
+
+                        kling_quality_dropdown = gr.Dropdown(
+                            choices=list(KLING_QUALITY_OPTIONS.keys()),
+                            value=KLING_DEFAULT_QUALITY,
+                            label="화질",
+                            info="720p (Standard): 빠름 / 1080p (Professional): 고화질",
                         )
 
                         kling_duration_slider = gr.Slider(
@@ -858,7 +998,18 @@ def build_ui() -> gr.Blocks:
                         )
 
                 gr.Markdown("#### 🎥 생성된 영상")
-                video_output = gr.Video(label="생성 결과", height=480)
+                video_output = gr.Video(label="생성 결과", height=720)
+
+                def _on_kling_model_change(model_label: str):
+                    """Omni 모델(supports_video_reference=True)에서만 영상 레퍼런스 탭 표시"""
+                    supports = KLING_MODELS.get(model_label, {}).get("supports_video_reference", False)
+                    return gr.update(visible=supports)
+
+                kling_model_radio.change(
+                    _on_kling_model_change,
+                    inputs=[kling_model_radio],
+                    outputs=[video_ref_tab],
+                )
 
                 unified_video_fn = build_unified_video_fn(gallery_state)
                 btn_generate_video.click(
@@ -874,6 +1025,7 @@ def build_ui() -> gr.Blocks:
                         kling_duration_slider,
                         kling_ratio_dropdown,
                         enable_audio_checkbox,
+                        kling_quality_dropdown,
                     ],
                     outputs=[video_output, video_status],
                 )
@@ -898,9 +1050,10 @@ def build_ui() -> gr.Blocks:
                 full_gallery = gr.Gallery(
                     label="전체 갤러리",
                     columns=4,
-                    height=600,
+                    height=900,
                     object_fit="contain",
                     value=gallery_state.to_gradio_gallery(),
+                    elem_id="full-gallery",
                 )
 
                 with gr.Row():
@@ -914,16 +1067,19 @@ def build_ui() -> gr.Blocks:
                         "📥 PNG 다운로드",
                         variant="secondary",
                         scale=1,
+                        elem_id="btn-download-gallery",
                     )
                     btn_make_video_gallery = gr.Button(
                         "🎬 영상 레퍼런스",
                         variant="secondary",
                         scale=1,
+                        elem_id="btn-video-gallery",
                     )
                     btn_use_as_ref_gallery = gr.Button(
                         "🖼️ 이미지 레퍼런스",
                         variant="secondary",
                         scale=1,
+                        elem_id="btn-ref-gallery",
                     )
 
                 single_png_output_gallery = gr.File(label="PNG 다운로드", visible=True)
@@ -967,20 +1123,13 @@ def build_ui() -> gr.Blocks:
 
         # ── 탭 간 "영상화" 버튼 공통 핸들러 ─────────────────────────────────
 
-        def _get_image_for_video(idx: int):
-            """gallery_state에서 성공한 이미지를 인덱스로 가져옵니다."""
-            success_items = [i for i in gallery_state.items if i.status == "success"]
-            if 0 <= idx < len(success_items):
-                return success_items[idx].image
-            return None
-
         def on_make_video(idx: int):
             """선택된 이미지를 영상 생성 탭으로 전송합니다."""
-            img = _get_image_for_video(idx)
-            if img is None:
+            item = gallery_state.get_success_item_by_visual_index(idx)
+            if item is None:
                 gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
                 return None, gr.update()
-            return img, gr.update(selected="tab_video")
+            return item.image, gr.update(selected="tab_video")
 
         btn_make_video_gen.click(
             on_make_video,
