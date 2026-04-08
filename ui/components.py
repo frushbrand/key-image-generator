@@ -384,9 +384,8 @@ def build_ui() -> gr.Blocks:
     saved_kling_access = saved.get("kling_access_key", "")
     saved_kling_secret = saved.get("kling_secret_key", "")
 
-    def _use_as_ref(idx: int, current_files):
+    def _use_as_ref(idx: int, current_files: list):
         """선택된 이미지를 레퍼런스 이미지 업로드 칸에 추가하는 공용 핸들러."""
-        import tempfile
         success_items = [i for i in gallery_state.items if i.status == "success"]
         if not (0 <= idx < len(success_items)):
             gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
@@ -401,14 +400,7 @@ def build_ui() -> gr.Blocks:
             gr.Warning(f"레퍼런스 이미지는 최대 {MAX_REFERENCE_IMAGES}장까지 추가할 수 있습니다.")
             return gr.update()
 
-        if item.image_path and os.path.exists(item.image_path):
-            return gr.update(value=current_paths + [item.image_path])
-
-        # 저장된 경로가 없으면 임시 파일로 저장
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp_path = tmp.name
-        item.image.save(tmp_path)
-        return gr.update(value=current_paths + [tmp_path])
+        return gr.update(value=current_paths + [item.image_path])
 
     # 탭 전환을 위한 JavaScript (localStorage로 새로고침 시 탭 유지)
     TAB_PERSIST_JS = """
