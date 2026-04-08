@@ -54,6 +54,13 @@ KLING_DURATIONS = list(range(3, 16))  # 3 ~ 15초 (1초 단위)
 KLING_DEFAULT_DURATION = 5
 KLING_DEFAULT_MODEL = "Kling v3"
 
+# 클링 화질 옵션 (API mode 값으로 매핑)
+KLING_QUALITY_OPTIONS = {
+    "720p (Standard)": "std",
+    "1080p (Professional)": "pro",
+}
+KLING_DEFAULT_QUALITY = "720p (Standard)"
+
 KLING_VIDEO_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
 KLING_DEFAULT_RATIO = "16:9"
 

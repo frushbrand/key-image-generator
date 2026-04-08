@@ -46,13 +46,24 @@ class GalleryState:
     def image_paths(self) -> list[str]:
         return [item.image_path for item in self._items if item.image_path]
 
+    def get_success_item_by_visual_index(self, visual_idx: int) -> Optional[GalleryItem]:
+        """
+        최신순(역순) 갤러리 표시 기준으로 시각적 인덱스에 해당하는 항목을 반환합니다.
+        시각적 인덱스 0 = 가장 최근 항목
+        """
+        success_items = [i for i in self._items if i.status == "success"]
+        real_idx = len(success_items) - 1 - visual_idx
+        if 0 <= real_idx < len(success_items):
+            return success_items[real_idx]
+        return None
+
     def to_gradio_gallery(self) -> list[tuple[Image.Image, str]]:
         """
         Gradio Gallery 컴포넌트에 전달할 형식으로 변환합니다.
-        각 항목은 (image, caption) 튜플입니다.
+        각 항목은 (image, caption) 튜플이며, 최신 항목이 맨 앞(왼쪽 위)에 표시됩니다.
         """
         result = []
-        for item in self._items:
+        for item in reversed(self._items):
             if item.image is None:
                 continue
             caption = (
