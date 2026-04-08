@@ -1047,7 +1047,7 @@ def build_ui() -> gr.Blocks:
                             img = Image.open(p).convert("RGB")
                             img.thumbnail((256, 256), Image.LANCZOS)
                             thumbs.append(img)
-                        except Exception:
+                        except (IOError, OSError, SyntaxError):
                             continue
                     return gr.Gallery(visible=bool(thumbs), value=thumbs)
 
