@@ -96,6 +96,7 @@ def create_image_to_video_task(
     duration: int,
     aspect_ratio: str,
     mode: str = "standard",
+    enable_audio: bool = False,
 ) -> str:
     """
     이미지→영상 생성 작업을 요청하고 task_id를 반환합니다.
@@ -110,10 +111,11 @@ def create_image_to_video_task(
     duration   : int  영상 길이 (초, 5 또는 10)
     aspect_ratio : str  화면 비율 (예: "16:9")
     mode       : str  "standard" 또는 "professional"
+    enable_audio : bool 오디오 생성 활성화 (Omni 모델 전용)
     """
     img_b64 = _image_to_base64(image)
 
-    payload = {
+    payload: dict = {
         "model_name": model,
         "image": img_b64,
         "prompt": prompt.strip() if prompt else "",
@@ -122,6 +124,8 @@ def create_image_to_video_task(
         "mode": mode,
         "cfg_scale": 0.5,
     }
+    if enable_audio:
+        payload["enable_sound"] = True
 
     resp = requests.post(
         f"{KLING_API_BASE}/v1/videos/image2video",
@@ -157,6 +161,7 @@ def create_start_end_frame_task(
     duration: int,
     aspect_ratio: str,
     mode: str = "standard",
+    enable_audio: bool = False,
 ) -> str:
     """
     시작-끝 프레임 방식으로 영상 생성 작업을 요청하고 task_id를 반환합니다.
@@ -165,11 +170,12 @@ def create_start_end_frame_task(
     ----------
     start_image : PIL Image  시작 프레임
     end_image   : PIL Image  끝 프레임
+    enable_audio : bool 오디오 생성 활성화 (Omni 모델 전용)
     """
     start_b64 = _image_to_base64(start_image)
     end_b64 = _image_to_base64(end_image)
 
-    payload = {
+    payload: dict = {
         "model_name": model,
         "image": start_b64,
         "image_tail": end_b64,
@@ -179,9 +185,68 @@ def create_start_end_frame_task(
         "mode": mode,
         "cfg_scale": 0.5,
     }
+    if enable_audio:
+        payload["enable_sound"] = True
 
     resp = requests.post(
         f"{KLING_API_BASE}/v1/videos/image2video",
+        headers=_auth_headers(access_key, secret_key),
+        json=payload,
+        timeout=30,
+    )
+
+    if resp.status_code == 401:
+        raise PermissionError("Kling API 인증 실패. Access Key / Secret Key를 확인해주세요.")
+
+    resp.raise_for_status()
+    data = resp.json()
+
+    code = data.get("code", -1)
+    if code != 0:
+        raise RuntimeError(f"Kling API 오류 (code={code}): {data.get('message', data)}")
+
+    task_id = data.get("data", {}).get("task_id")
+    if not task_id:
+        raise RuntimeError(f"task_id를 받지 못했습니다. 응답: {data}")
+
+    return task_id
+
+
+def create_text_to_video_task(
+    access_key: str,
+    secret_key: str,
+    prompt: str,
+    model: str,
+    duration: int,
+    aspect_ratio: str,
+    mode: str = "standard",
+    enable_audio: bool = False,
+) -> str:
+    """
+    텍스트만으로 영상 생성 작업을 요청하고 task_id를 반환합니다.
+
+    Parameters
+    ----------
+    prompt       : str  영상 내용을 설명하는 프롬프트
+    model        : str  API 모델명 (예: "kling-v3")
+    duration     : int  영상 길이 (초, 5 또는 10)
+    aspect_ratio : str  화면 비율 (예: "16:9")
+    mode         : str  "standard" 또는 "professional"
+    enable_audio : bool 오디오 생성 활성화 (Omni 모델 전용)
+    """
+    payload: dict = {
+        "model_name": model,
+        "prompt": prompt.strip() if prompt else "",
+        "duration": str(duration),
+        "aspect_ratio": aspect_ratio,
+        "mode": mode,
+        "cfg_scale": 0.5,
+    }
+    if enable_audio:
+        payload["enable_sound"] = True
+
+    resp = requests.post(
+        f"{KLING_API_BASE}/v1/videos/text2video",
         headers=_auth_headers(access_key, secret_key),
         json=payload,
         timeout=30,
@@ -213,17 +278,19 @@ def create_video_reference_task(
     duration: int,
     aspect_ratio: str,
     mode: str = "standard",
+    enable_audio: bool = False,
 ) -> str:
     """
     레퍼런스 영상을 사용한 영상 생성 작업을 요청하고 task_id를 반환합니다.
 
     Parameters
     ----------
-    video_path : str  로컬 영상 파일 경로 (3~10초)
+    video_path   : str  로컬 영상 파일 경로 (3~10초)
+    enable_audio : bool 오디오 생성 활성화 (Omni 모델 전용)
     """
     video_b64 = _video_to_base64(video_path)
 
-    payload = {
+    payload: dict = {
         "model_name": model,
         "video": video_b64,
         "prompt": prompt.strip() if prompt else "",
@@ -232,6 +299,8 @@ def create_video_reference_task(
         "mode": mode,
         "cfg_scale": 0.5,
     }
+    if enable_audio:
+        payload["enable_sound"] = True
 
     resp = requests.post(
         f"{KLING_API_BASE}/v1/videos/video2video",
