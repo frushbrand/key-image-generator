@@ -137,7 +137,15 @@ def create_image_to_video_task(
     if resp.status_code == 401:
         raise PermissionError("Kling API 인증 실패. Access Key / Secret Key를 확인해주세요.")
 
-    resp.raise_for_status()
+    if not resp.ok:
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+        raise RuntimeError(
+            f"Kling API 오류 ({resp.status_code}): {body}"
+        )
+
     data = resp.json()
 
     code = data.get("code", -1)
@@ -198,7 +206,15 @@ def create_start_end_frame_task(
     if resp.status_code == 401:
         raise PermissionError("Kling API 인증 실패. Access Key / Secret Key를 확인해주세요.")
 
-    resp.raise_for_status()
+    if not resp.ok:
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+        raise RuntimeError(
+            f"Kling API 오류 ({resp.status_code}): {body}"
+        )
+
     data = resp.json()
 
     code = data.get("code", -1)
@@ -255,7 +271,14 @@ def create_text_to_video_task(
     if resp.status_code == 401:
         raise PermissionError("Kling API 인증 실패. Access Key / Secret Key를 확인해주세요.")
 
-    resp.raise_for_status()
+    if not resp.ok:
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+        raise RuntimeError(
+            f"Kling API 오류 ({resp.status_code}): {body}"
+        )
     data = resp.json()
 
     code = data.get("code", -1)
@@ -312,7 +335,15 @@ def create_video_reference_task(
     if resp.status_code == 401:
         raise PermissionError("Kling API 인증 실패. Access Key / Secret Key를 확인해주세요.")
 
-    resp.raise_for_status()
+    if not resp.ok:
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+        raise RuntimeError(
+            f"Kling API 오류 ({resp.status_code}): {body}"
+        )
+
     data = resp.json()
 
     code = data.get("code", -1)

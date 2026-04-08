@@ -151,3 +151,61 @@ def load_metadata(meta_path: str) -> dict:
             return json.load(f)
     except Exception:
         return {}
+
+
+def load_existing_outputs() -> list[dict]:
+    """
+    outputs/ 디렉토리에 저장된 이미지 파일을 스캔하여 메타데이터와 함께 반환합니다.
+    반환값: 각 항목은 {"image": PIL.Image, "image_path": str, "model": str,
+                       "ratio": str, "quality": str, "prompt": str} 딕셔너리
+    """
+    items: list[dict] = []
+    out_base = Path(OUTPUT_BASE_DIR)
+    if not out_base.exists():
+        return items
+
+    # 날짜 폴더를 오래된 순서대로 스캔
+    for date_dir in sorted(out_base.iterdir()):
+        if not date_dir.is_dir():
+            continue
+        for img_path in sorted(date_dir.glob("*.png")):
+            meta_path = img_path.with_suffix(".json")
+            try:
+                meta: dict = {}
+                if meta_path.exists():
+                    meta = load_metadata(str(meta_path))
+                img = Image.open(str(img_path)).convert("RGB")
+                items.append(
+                    {
+                        "image": img,
+                        "image_path": str(img_path),
+                        "model": meta.get("model", ""),
+                        "ratio": meta.get("ratio", ""),
+                        "quality": meta.get("quality", ""),
+                        "prompt": meta.get("prompt", ""),
+                    }
+                )
+            except Exception:
+                continue
+
+    return items
+
+
+def get_disk_usage_text() -> str:
+    """루트 파티션의 전체·사용·여유 디스크 용량 문자열을 반환합니다."""
+    import shutil
+
+    try:
+        total, used, free = shutil.disk_usage("/")
+
+        def fmt(n: int) -> str:
+            if n >= 1024 ** 3:
+                return f"{n / 1024 ** 3:.1f} GB"
+            return f"{n / 1024 ** 2:.0f} MB"
+
+        return (
+            f"💾 저장 공간: 전체 {fmt(total)} | 사용 {fmt(used)} | "
+            f"**남은 용량: {fmt(free)}**"
+        )
+    except Exception:
+        return "💾 저장 공간 정보를 가져올 수 없습니다."
