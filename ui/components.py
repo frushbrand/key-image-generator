@@ -520,10 +520,10 @@ def build_ui() -> gr.Blocks:
                     btn.addEventListener('mousedown', function(e) {
                         e.stopPropagation();
                         e.preventDefault();
-                        // 갤러리 아이템 클릭으로 선택 상태 업데이트
+                        // 갤러리 아이템 클릭으로 Gradio select 이벤트를 먼저 발생시킨 후
                         var clickTarget = item.querySelector('button') || item.querySelector('img') || item;
                         clickTarget.click();
-                        // 선택 상태 업데이트 후 액션 버튼 클릭
+                        // Gradio가 select 이벤트를 처리하고 상태를 업데이트할 때까지 대기 (약 200ms)
                         setTimeout(function() { clickGradioBtn(action.id); }, 220);
                     });
                     overlay.appendChild(btn);
@@ -541,6 +541,8 @@ def build_ui() -> gr.Blocks:
         var observer = new MutationObserver(refreshAll);
         observer.observe(document.body, { childList: true, subtree: true });
 
+        // Gradio renders gallery items asynchronously; retry at intervals
+        // to catch items that load after the initial page render.
         setTimeout(refreshAll, 800);
         setTimeout(refreshAll, 2000);
         setTimeout(refreshAll, 4000);
@@ -836,7 +838,7 @@ def build_ui() -> gr.Blocks:
                     outputs=[ref_preview],
                 )
                 btn_clear_refs.click(
-                    lambda: (gr.update(value=None), gr.Gallery(visible=False, value=[])),
+                    lambda: (gr.update(value=None), gr.update(visible=False, value=[])),
                     outputs=[ref_image_upload, ref_preview],
                 )
 
@@ -999,9 +1001,9 @@ def build_ui() -> gr.Blocks:
                 video_output = gr.Video(label="생성 결과", height=720)
 
                 def _on_kling_model_change(model_label: str):
-                    """Omni 모델에서만 영상 레퍼런스 탭 표시"""
-                    is_omni = "Omni" in model_label
-                    return gr.update(visible=is_omni)
+                    """Omni 모델(supports_video_reference=True)에서만 영상 레퍼런스 탭 표시"""
+                    supports = KLING_MODELS.get(model_label, {}).get("supports_video_reference", False)
+                    return gr.update(visible=supports)
 
                 kling_model_radio.change(
                     _on_kling_model_change,
