@@ -1,6 +1,8 @@
 """
 Gemini API 클라이언트 모듈
-나노 바나나 2 / 나노 바나나 프로 (gemini-2.0-flash-preview-image-generation) 모델을 사용합니다.
+나노 바나나 2 (gemini-3.1-flash-image-preview),
+나노 바나나 프로 (gemini-3-pro-image-preview),
+나노 바나나 (gemini-2.5-flash-image) 모델을 지원합니다.
 """
 
 import base64
@@ -58,7 +60,7 @@ def generate_with_nano_banana_2(
     reference_images: Optional[list[Image.Image]] = None,
 ) -> Image.Image:
     """
-    나노 바나나 2 (Gemini 3.1 Flash Image Preview) 모델로 이미지를 생성합니다.
+    나노 바나나 2 (gemini-3.1-flash-image-preview) 모델로 이미지를 생성합니다.
     레퍼런스 이미지를 지원합니다.
     """
     client = _make_client(api_key)
@@ -116,7 +118,7 @@ def generate_with_nano_banana_pro(
     reference_images: Optional[list[Image.Image]] = None,
 ) -> Image.Image:
     """
-    나노 바나나 프로 (Gemini 3 Pro 이미지 모델)로 이미지를 생성합니다.
+    나노 바나나 프로 (gemini-3-pro-image-preview) 모델로 이미지를 생성합니다.
     레퍼런스 이미지를 지원합니다.
     """
     client = _make_client(api_key)
@@ -163,6 +165,61 @@ def generate_with_nano_banana_pro(
     raise ValueError("모델이 이미지를 반환하지 않았습니다. 프롬프트를 수정하거나 다시 시도해주세요.")
 
 
+def generate_with_nano_banana(
+    api_key: str,
+    prompt: str,
+    ratio: str,
+    quality: str,
+    reference_images: Optional[list[Image.Image]] = None,
+) -> Image.Image:
+    """
+    나노 바나나 (gemini-2.5-flash-image) 모델로 이미지를 생성합니다.
+    레퍼런스 이미지를 지원합니다.
+    """
+    client = _make_client(api_key)
+
+    ratio_cfg = ASPECT_RATIOS[ratio]
+    quality_cfg = QUALITY_OPTIONS[quality]
+    width = int(ratio_cfg["width"] * quality_cfg["width_multiplier"])
+    height = int(ratio_cfg["height"] * quality_cfg["width_multiplier"])
+
+    full_prompt = (
+        f"{prompt}\n\n"
+        f"Image should be {width}x{height} pixels, aspect ratio {ratio}."
+    )
+
+    contents: list = []
+
+    if reference_images:
+        contents.append("Reference images are provided below. Use them as style/composition reference:\n")
+        for img in reference_images:
+            contents.append(
+                types.Part.from_bytes(data=_pil_to_bytes(img), mime_type="image/png")
+            )
+        contents.append("\nNow generate the requested image:\n")
+
+    contents.append(full_prompt)
+
+    response = client.models.generate_content(
+        model=MODELS["나노 바나나"]["api_name"],
+        contents=contents,
+        config=types.GenerateContentConfig(
+            response_modalities=["IMAGE", "TEXT"],
+        ),
+    )
+
+    if not response.candidates:
+        raise ValueError("모델이 응답을 반환하지 않았습니다. 프롬프트를 수정하거나 다시 시도해주세요.")
+    for part in response.candidates[0].content.parts:
+        if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+            img_bytes = part.inline_data.data
+            if isinstance(img_bytes, str):
+                img_bytes = base64.b64decode(img_bytes)
+            return Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+    raise ValueError("모델이 이미지를 반환하지 않았습니다. 프롬프트를 수정하거나 다시 시도해주세요.")
+
+
 def generate_single_image(
     api_key: str,
     model_name: str,
@@ -181,6 +238,10 @@ def generate_single_image(
                 )
             elif model_name == "나노 바나나 프로":
                 return generate_with_nano_banana_pro(
+                    api_key, prompt, ratio, quality, reference_images
+                )
+            elif model_name == "나노 바나나":
+                return generate_with_nano_banana(
                     api_key, prompt, ratio, quality, reference_images
                 )
             else:

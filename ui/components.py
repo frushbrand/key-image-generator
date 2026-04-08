@@ -481,7 +481,7 @@ def build_ui() -> gr.Blocks:
                             choices=list(MODELS.keys()),
                             value=DEFAULT_MODEL,
                             label="모델 선택",
-                            info="나노 바나나 2: 고급 모델 / 나노 바나나 프로: 가성비 모델",
+                            info="나노 바나나 2: 속도·대량 작업 최적화 / 나노 바나나 프로: 전문 애셋·고급 추론 / 나노 바나나: 초고속·저지연",
                         )
 
                         ratio_dropdown = gr.Dropdown(
