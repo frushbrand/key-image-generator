@@ -279,11 +279,11 @@ def build_generate_fn(gallery_state: GalleryState):
         api_key = cfg.get("api_key", "")
         if not api_key or not api_key.strip():
             gr.Warning("API 키 설정 탭에서 Google API 키를 먼저 저장해주세요.")
-            return gallery_state.to_gradio_gallery(), gallery_state.get_summary(), None
+            return gallery_state.to_gradio_gallery(), gallery_state.get_summary()
 
         if not prompt or not prompt.strip():
             gr.Warning("프롬프트를 입력해주세요.")
-            return gallery_state.to_gradio_gallery(), gallery_state.get_summary(), None
+            return gallery_state.to_gradio_gallery(), gallery_state.get_summary()
 
         count = max(1, min(int(count), MAX_COUNT))
         progress(0, desc="준비 중...")
@@ -354,7 +354,7 @@ def build_generate_fn(gallery_state: GalleryState):
             )
             status_msg += f"\n\n❌ 실패 원인:\n{error_details}"
 
-        return gallery_state.to_gradio_gallery(), status_msg, None
+        return gallery_state.to_gradio_gallery(), status_msg
 
     return generate
 
@@ -681,6 +681,62 @@ def build_ui() -> gr.Blocks:
         setTimeout(attachObs, 800);
         setTimeout(function() { GIDS.forEach(refreshOverlays); }, 1500);
     })();
+
+    // ── Ctrl+Enter 단축키: 이미지/영상 생성 ──────────────────────────────
+    (function() {
+        function bindCtrlEnter(promptElemId, btnElemId) {
+            var attempts = 0;
+            (function tryBind() {
+                var wrap = document.getElementById(promptElemId);
+                var ta = wrap ? wrap.querySelector('textarea') : null;
+                if (!ta) {
+                    if (++attempts < 40) { setTimeout(tryBind, 300); return; }
+                    return;
+                }
+                ta.addEventListener('keydown', function(e) {
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                        e.preventDefault(); e.stopPropagation();
+                        var bw = document.getElementById(btnElemId);
+                        var b = bw ? (bw.tagName === 'BUTTON' ? bw : bw.querySelector('button')) : null;
+                        if (b) b.click();
+                    }
+                });
+            })();
+        }
+        bindCtrlEnter('image-prompt', 'image-generate-btn');
+        bindCtrlEnter('video-prompt', 'video-generate-btn');
+    })();
+
+    // ── 다운로드 파일 위젯 자동 실행 (별도 창 없이 바로 다운로드) ──────────
+    (function() {
+        var DL_IDS = ['single-png-gen', 'selected-zip-gen', 'single-png-gallery', 'selected-zip-gallery', 'full-zip-gallery'];
+        DL_IDS.forEach(function(id) {
+            var attempts = 0;
+            (function trySetup() {
+                var wrap = document.getElementById(id);
+                if (!wrap) {
+                    if (++attempts < 40) { setTimeout(trySetup, 500); return; }
+                    return;
+                }
+                // 위젯을 시각적으로 숨김
+                wrap.style.display = 'none';
+                // 파일 링크 생성 시 자동으로 다운로드 트리거
+                new MutationObserver(function() {
+                    var link = wrap.querySelector('a[href]');
+                    if (link && link.href && !link.dataset.autoTriggered) {
+                        link.dataset.autoTriggered = '1';
+                        var a = document.createElement('a');
+                        a.href = link.href;
+                        a.download = link.download || '';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        setTimeout(function() { link.removeAttribute('data-auto-triggered'); }, 3000);
+                    }
+                }).observe(wrap, {childList: true, subtree: true, attributes: true, attributeFilter: ['href']});
+            })();
+        });
+    })();
     </script>
     """
 
@@ -717,6 +773,39 @@ def build_ui() -> gr.Blocks:
         #gha-ov button:hover {
             background: #fff !important;
             transform: scale(1.12);
+        }
+
+        /* 레퍼런스 파일 목록의 개별 삭제(×) 버튼이 파일 컴포넌트 헤더 버튼에 가려지지 않도록 */
+        .file-upload .file-preview,
+        .file-upload .file-preview-holder,
+        .gradio-file .file-preview,
+        .gradio-file .file-preview-holder {
+            overflow: visible !important;
+        }
+        .file-upload .wrap,
+        .gradio-file .wrap {
+            overflow: visible !important;
+        }
+        /* 파일 목록이 우측 아이콘 버튼 아래로 들어가지 않도록 여백 확보 */
+        .file-upload ul.file-list,
+        .gradio-file ul,
+        .file-upload .file-name,
+        .gradio-file .file-name {
+            padding-right: 8px !important;
+        }
+        /* 개별 파일 삭제 버튼 z-index 올리기 */
+        .file-upload .delete,
+        .gradio-file .delete,
+        .file-upload button.delete,
+        .gradio-file button.delete {
+            z-index: 20 !important;
+            position: relative !important;
+        }
+        /* 파일 컴포넌트 우상단 아이콘 버튼이 목록 위로 표시되도록 */
+        .file-upload .icon-button,
+        .gradio-file > .wrap > .icon-button,
+        [data-testid="file-upload"] .icon-button {
+            z-index: 15 !important;
         }
         """,
     ) as demo:
@@ -861,8 +950,9 @@ def build_ui() -> gr.Blocks:
 
                         prompt_input = gr.Textbox(
                             label="프롬프트",
-                            placeholder="생성할 이미지를 설명하세요. 한국어/영어 모두 사용 가능합니다.\n예: A cinematic key visual of a futuristic city at golden hour, dramatic lighting, 8K",
+                            placeholder="생성할 이미지를 설명하세요. 한국어/영어 모두 사용 가능합니다.\n예: A cinematic key visual of a futuristic city at golden hour, dramatic lighting, 8K\n\n💡 Ctrl+Enter로 생성 시작",
                             lines=6,
+                            elem_id="image-prompt",
                         )
 
                         model_info = gr.Markdown(
@@ -873,6 +963,7 @@ def build_ui() -> gr.Blocks:
                             "🚀 이미지 생성",
                             variant="primary",
                             elem_classes=["generate-btn"],
+                            elem_id="image-generate-btn",
                         )
 
                         gen_status = gr.Textbox(
@@ -919,7 +1010,7 @@ def build_ui() -> gr.Blocks:
                         scale=1,
                         elem_id="btn-ref-gen",
                     )
-                single_png_output_gen = gr.File(label="PNG 다운로드", visible=True)
+                single_png_output_gen = gr.File(label="PNG 다운로드", visible=True, elem_id="single-png-gen")
                 with gr.Row():
                     btn_multi_select_gen = gr.Button(
                         "☑️ 다중 선택",
@@ -940,7 +1031,7 @@ def build_ui() -> gr.Blocks:
                         size="sm",
                         scale=1,
                     )
-                selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", visible=True)
+                selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", visible=True, elem_id="selected-zip-gen")
 
                 # 모델 선택 변경 시 설명 업데이트
                 def update_model_info(m):
@@ -949,11 +1040,16 @@ def build_ui() -> gr.Blocks:
                 def update_ref_visibility(files):
                     if not files:
                         return gr.Gallery(visible=False, value=[])
-                    imgs = []
+                    thumbs = []
                     for f in files:
                         p = f if isinstance(f, str) else f.path
-                        imgs.append(p)
-                    return gr.Gallery(visible=True, value=imgs)
+                        try:
+                            img = Image.open(p).convert("RGB")
+                            img.thumbnail((256, 256), Image.LANCZOS)
+                            thumbs.append(img)
+                        except (IOError, OSError, SyntaxError):
+                            continue
+                    return gr.Gallery(visible=bool(thumbs), value=thumbs)
 
                 def on_add_ref_images(new_files, current_files):
                     """추가 업로드된 파일을 기존 레퍼런스 이미지 목록에 병합합니다."""
@@ -1013,7 +1109,7 @@ def build_ui() -> gr.Blocks:
                         count_slider,
                         ref_image_upload,
                     ],
-                    outputs=[live_gallery, gen_status, ref_preview],
+                    outputs=[live_gallery, gen_status],
                 )
 
                 def on_gen_gallery_select(evt: gr.SelectData):
@@ -1142,8 +1238,9 @@ def build_ui() -> gr.Blocks:
 
                         kling_prompt_input = gr.Textbox(
                             label="프롬프트 (선택)",
-                            placeholder="영상 움직임을 설명하세요. 예: Camera slowly zooms in, dramatic lighting",
+                            placeholder="영상 움직임을 설명하세요. 예: Camera slowly zooms in, dramatic lighting\n\n💡 Ctrl+Enter로 생성 시작",
                             lines=3,
+                            elem_id="video-prompt",
                         )
 
                         enable_audio_checkbox = gr.Checkbox(
@@ -1156,6 +1253,7 @@ def build_ui() -> gr.Blocks:
                             "🎬 영상 생성",
                             variant="primary",
                             elem_classes=["generate-btn"],
+                            elem_id="video-generate-btn",
                         )
 
                         video_status = gr.Textbox(
@@ -1325,8 +1423,8 @@ def build_ui() -> gr.Blocks:
                         elem_id="btn-ref-gallery",
                     )
 
-                single_png_output_gallery = gr.File(label="PNG 다운로드", visible=True)
-                zip_file_output = gr.File(label="ZIP 다운로드", visible=True)
+                single_png_output_gallery = gr.File(label="PNG 다운로드", visible=True, elem_id="single-png-gallery")
+                zip_file_output = gr.File(label="ZIP 다운로드", visible=True, elem_id="full-zip-gallery")
                 with gr.Row():
                     btn_multi_select_gallery = gr.Button(
                         "☑️ 다중 선택",
@@ -1347,7 +1445,7 @@ def build_ui() -> gr.Blocks:
                         size="sm",
                         scale=1,
                     )
-                selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", visible=True)
+                selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", visible=True, elem_id="selected-zip-gallery")
 
                 def refresh_gallery():
                     return (
