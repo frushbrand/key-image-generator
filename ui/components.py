@@ -972,8 +972,9 @@ def build_ui() -> gr.Blocks:
                         for f in new_files if f is not None
                     ]
 
+                    total = len(current_paths) + len(new_paths)
                     combined = (current_paths + new_paths)[:MAX_REFERENCE_IMAGES]
-                    if len(current_paths) + len(new_paths) > MAX_REFERENCE_IMAGES:
+                    if total > MAX_REFERENCE_IMAGES:
                         gr.Warning(
                             f"레퍼런스 이미지는 최대 {MAX_REFERENCE_IMAGES}장까지 추가할 수 있습니다. "
                             f"처음 {MAX_REFERENCE_IMAGES}장만 사용됩니다."
