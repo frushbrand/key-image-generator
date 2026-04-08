@@ -30,6 +30,7 @@ from config.settings import (
 from core.gemini_client import validate_api_key, generate_batch_images
 from core.kling_client import (
     validate_kling_keys,
+    create_text_to_video_task,
     create_image_to_video_task,
     create_start_end_frame_task,
     create_video_reference_task,
@@ -122,11 +123,9 @@ def on_save_kling_keys(access_key: str, secret_key: str):
 
 
 def build_unified_video_fn(gallery_state: GalleryState):
-    """레퍼런스 이미지 / 시작-끝 프레임 / 영상 레퍼런스 모드를 통합 처리하는 핸들러 팩토리"""
+    """레퍼런스 이미지 / 시작-끝 프레임 / 영상 레퍼런스 / 텍스트 모드를 통합 처리하는 핸들러 팩토리"""
 
     def generate_video(
-        access_key: str,
-        secret_key: str,
         mode: str,           # "image" | "start_end" | "video_ref"
         ref_image,           # 레퍼런스 이미지 모드 (PIL Image or ndarray)
         start_image,         # 시작-끝 프레임 모드: 시작 프레임
@@ -136,13 +135,15 @@ def build_unified_video_fn(gallery_state: GalleryState):
         model_label: str,
         duration: int,
         aspect_ratio: str,
+        enable_audio: bool,
         progress=gr.Progress(track_tqdm=True),
     ):
-        ak = (access_key or "").strip()
-        sk = (secret_key or "").strip()
+        cfg = load_settings()
+        ak = cfg.get("kling_access_key", "").strip()
+        sk = cfg.get("kling_secret_key", "").strip()
         if not ak or not sk:
-            gr.Warning("Kling Access Key와 Secret Key를 입력해주세요.")
-            return None, "❌ API 키 없음"
+            gr.Warning("API 키 설정 탭에서 Kling Access Key와 Secret Key를 먼저 저장해주세요.")
+            return None, "❌ Kling API 키 없음"
 
         model_cfg = KLING_MODELS[model_label]
         api_model = model_cfg["api_name"]
@@ -168,7 +169,7 @@ def build_unified_video_fn(gallery_state: GalleryState):
                     start_image=start_pil, end_image=end_pil,
                     prompt=prompt or "", model=api_model,
                     duration=int(duration), aspect_ratio=aspect_ratio,
-                    mode=mode_api,
+                    mode=mode_api, enable_audio=enable_audio,
                 )
             elif mode == "video_ref":
                 if ref_video is None:
@@ -179,25 +180,34 @@ def build_unified_video_fn(gallery_state: GalleryState):
                     video_path=video_path,
                     prompt=prompt or "", model=api_model,
                     duration=int(duration), aspect_ratio=aspect_ratio,
-                    mode=mode_api,
+                    mode=mode_api, enable_audio=enable_audio,
                 )
                 endpoint = "video2video"
             else:
-                # 레퍼런스 이미지 모드 (기본)
+                # 레퍼런스 이미지 모드 — 이미지가 없으면 텍스트 투 비디오로 대체
                 if ref_image is None:
-                    gr.Warning("레퍼런스 이미지를 업로드하거나 갤러리에서 '영상화' 버튼을 클릭해주세요.")
-                    return None, "❌ 레퍼런스 이미지 없음"
-                pil_image = (
-                    ref_image if isinstance(ref_image, Image.Image)
-                    else Image.fromarray(ref_image).convert("RGB")
-                )
-                task_id = create_image_to_video_task(
-                    access_key=ak, secret_key=sk,
-                    image=pil_image,
-                    prompt=prompt or "", model=api_model,
-                    duration=int(duration), aspect_ratio=aspect_ratio,
-                    mode=mode_api,
-                )
+                    if not (prompt and prompt.strip()):
+                        return None, "❌ 레퍼런스 이미지가 없으면 프롬프트를 입력해주세요."
+                    progress(0.05, desc="텍스트→영상 작업 요청 중...")
+                    task_id = create_text_to_video_task(
+                        access_key=ak, secret_key=sk,
+                        prompt=prompt, model=api_model,
+                        duration=int(duration), aspect_ratio=aspect_ratio,
+                        mode=mode_api, enable_audio=enable_audio,
+                    )
+                    endpoint = "text2video"
+                else:
+                    pil_image = (
+                        ref_image if isinstance(ref_image, Image.Image)
+                        else Image.fromarray(ref_image).convert("RGB")
+                    )
+                    task_id = create_image_to_video_task(
+                        access_key=ak, secret_key=sk,
+                        image=pil_image,
+                        prompt=prompt or "", model=api_model,
+                        duration=int(duration), aspect_ratio=aspect_ratio,
+                        mode=mode_api, enable_audio=enable_audio,
+                    )
         except Exception as e:
             return None, f"❌ 작업 생성 실패: {e}"
 
@@ -241,7 +251,8 @@ def build_generate_fn(gallery_state: GalleryState):
         ratio: str,
         quality: str,
         count: int,
-        ref_images,  # Gradio File 컴포넌트 값 (list of paths or None)
+        ref_images,          # Gradio File 컴포넌트 값 (list of paths or None)
+        gallery_ref_image,   # 갤러리에서 선택한 이미지 레퍼런스 (PIL Image or None)
         progress=gr.Progress(track_tqdm=True),
     ):
         cfg = load_settings()
@@ -262,6 +273,13 @@ def build_generate_fn(gallery_state: GalleryState):
         if ref_images:
             paths = [r if isinstance(r, str) else r.path for r in ref_images if r is not None]
             ref_pil_images = load_reference_images(paths[:MAX_REFERENCE_IMAGES])
+        # 갤러리에서 선택한 레퍼런스 이미지를 앞에 추가
+        if gallery_ref_image is not None:
+            gal_pil = (
+                gallery_ref_image if isinstance(gallery_ref_image, Image.Image)
+                else Image.fromarray(gallery_ref_image).convert("RGB")
+            )
+            ref_pil_images = [gal_pil] + ref_pil_images
 
         completed = [0]
         new_items: list[GalleryItem] = []
@@ -450,6 +468,7 @@ def build_ui() -> gr.Blocks:
         # 탭 간 이미지 전달용 상태
         selected_img_idx_gen = gr.State(-1)      # 이미지 생성 탭 갤러리 선택 인덱스
         selected_img_idx_gallery = gr.State(-1)  # 갤러리 탭 선택 인덱스
+        gallery_ref_state = gr.State(None)       # 갤러리에서 선택한 이미지 생성 레퍼런스
 
         with gr.Tabs() as main_tabs:
 
@@ -590,14 +609,15 @@ def build_ui() -> gr.Blocks:
 
                 # 결과 갤러리 (생성 탭 하단)
                 gr.Markdown("### 🖼️ 생성 결과")
-                gr.Markdown("💡 이미지를 클릭해서 선택한 뒤 **🎬 영상화** 버튼을 눌러 영상을 생성할 수 있습니다.")
+                gr.Markdown("💡 이미지를 클릭해서 선택한 뒤 아래 버튼으로 영상화하거나 레퍼런스로 재사용할 수 있습니다.")
                 live_gallery = gr.Gallery(
                     label="생성된 이미지",
                     columns=4,
-                    height=500,
+                    height=700,
                     object_fit="contain",
                 )
                 with gr.Row():
+                    btn_refresh_gen = gr.Button("🔄 새로고침", variant="secondary", scale=1)
                     gen_selected_info = gr.Textbox(
                         label="선택된 이미지",
                         value="이미지를 클릭하여 선택하세요",
@@ -614,6 +634,17 @@ def build_ui() -> gr.Blocks:
                         variant="secondary",
                         scale=1,
                     )
+                    btn_use_as_ref_gen = gr.Button(
+                        "🖼️ 이미지 레퍼런스로 사용",
+                        variant="secondary",
+                        scale=1,
+                    )
+                gallery_ref_notice_gen = gr.Textbox(
+                    label="이미지 생성 레퍼런스",
+                    value="없음",
+                    interactive=False,
+                    scale=3,
+                )
                 single_png_output_gen = gr.File(label="PNG 다운로드", visible=True)
 
                 # 모델 선택 변경 시 설명 업데이트
@@ -646,6 +677,7 @@ def build_ui() -> gr.Blocks:
                         quality_dropdown,
                         count_slider,
                         ref_image_upload,
+                        gallery_ref_state,
                     ],
                     outputs=[live_gallery, gen_status, ref_preview],
                 )
@@ -658,11 +690,31 @@ def build_ui() -> gr.Blocks:
                     outputs=[selected_img_idx_gen, gen_selected_info],
                 )
 
+                def refresh_live_gallery():
+                    return gallery_state.to_gradio_gallery()
+
+                btn_refresh_gen.click(refresh_live_gallery, outputs=[live_gallery])
+
                 download_single_gen_fn = build_download_single_fn(gallery_state)
                 btn_download_single_gen.click(
                     download_single_gen_fn,
                     inputs=[selected_img_idx_gen],
                     outputs=[single_png_output_gen],
+                )
+
+                def on_use_as_ref(idx: int):
+                    """선택된 이미지를 이미지 생성 레퍼런스로 설정합니다."""
+                    success_items = [i for i in gallery_state.items if i.status == "success"]
+                    if not (0 <= idx < len(success_items)):
+                        gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
+                        return None, "없음"
+                    item = success_items[idx]
+                    return item.image, f"#{idx + 1}번 이미지 (레퍼런스로 설정됨)"
+
+                btn_use_as_ref_gen.click(
+                    on_use_as_ref,
+                    inputs=[selected_img_idx_gen],
+                    outputs=[gallery_ref_state, gallery_ref_notice_gen],
                 )
 
             # ── 탭 3: 영상 생성 (Kling) ──────────────────────────────────────
@@ -680,25 +732,12 @@ def build_ui() -> gr.Blocks:
 
                 with gr.Row():
                     with gr.Column(scale=1):
-                        gr.Markdown("#### 🔑 Kling API 키")
-                        kling_access_vid = gr.Textbox(
-                            label="Access Key",
-                            placeholder="Access Key...",
-                            value=saved_kling_access,
-                            type="password",
-                        )
-                        kling_secret_vid = gr.Textbox(
-                            label="Secret Key",
-                            placeholder="Secret Key...",
-                            value=saved_kling_secret,
-                            type="password",
-                        )
 
                         gr.Markdown("#### 📥 입력 방식 선택")
                         with gr.Tabs() as video_input_tabs:
 
                             with gr.Tab("🖼️ 레퍼런스 이미지"):
-                                gr.Markdown("시작 프레임 역할을 할 이미지를 업로드하세요.")
+                                gr.Markdown("시작 프레임 역할을 할 이미지를 업로드하세요. **이미지가 없으면 프롬프트만으로 텍스트→영상을 생성합니다.**")
                                 ref_image_vid = gr.Image(
                                     label="레퍼런스 이미지 (갤러리에서 전송 또는 직접 업로드)",
                                     type="pil",
@@ -768,6 +807,12 @@ def build_ui() -> gr.Blocks:
                             lines=3,
                         )
 
+                        enable_audio_checkbox = gr.Checkbox(
+                            label="🔊 오디오 생성 사용 (Kling 3 Omni 모델 전용)",
+                            value=False,
+                            info="Kling 3 Omni 모델에서 오디오를 함께 생성합니다. 다른 모델에서는 무시됩니다.",
+                        )
+
                         btn_generate_video = gr.Button(
                             "🎬 영상 생성",
                             variant="primary",
@@ -787,8 +832,6 @@ def build_ui() -> gr.Blocks:
                 btn_generate_video.click(
                     unified_video_fn,
                     inputs=[
-                        kling_access_vid,
-                        kling_secret_vid,
                         video_mode_state,
                         ref_image_vid,
                         start_image_vid,
@@ -798,6 +841,7 @@ def build_ui() -> gr.Blocks:
                         kling_model_radio,
                         kling_duration_slider,
                         kling_ratio_dropdown,
+                        enable_audio_checkbox,
                     ],
                     outputs=[video_output, video_status],
                 )
@@ -841,6 +885,17 @@ def build_ui() -> gr.Blocks:
                         variant="secondary",
                         scale=1,
                     )
+                    btn_use_as_ref_gallery = gr.Button(
+                        "🖼️ 이미지 레퍼런스로 사용",
+                        variant="secondary",
+                        scale=1,
+                    )
+                gallery_ref_notice_gal = gr.Textbox(
+                    label="이미지 생성 레퍼런스",
+                    value="없음",
+                    interactive=False,
+                    scale=3,
+                )
 
                 single_png_output_gallery = gr.File(label="PNG 다운로드", visible=True)
                 zip_file_output = gr.File(label="ZIP 다운로드", visible=True)
@@ -869,6 +924,21 @@ def build_ui() -> gr.Blocks:
                     download_single_gallery_fn,
                     inputs=[selected_img_idx_gallery],
                     outputs=[single_png_output_gallery],
+                )
+
+                def on_use_as_ref_gallery(idx: int):
+                    """선택된 이미지를 이미지 생성 레퍼런스로 설정합니다."""
+                    success_items = [i for i in gallery_state.items if i.status == "success"]
+                    if not (0 <= idx < len(success_items)):
+                        gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
+                        return None, "없음"
+                    item = success_items[idx]
+                    return item.image, f"#{idx + 1}번 이미지 (레퍼런스로 설정됨)"
+
+                btn_use_as_ref_gallery.click(
+                    on_use_as_ref_gallery,
+                    inputs=[selected_img_idx_gallery],
+                    outputs=[gallery_ref_state, gallery_ref_notice_gal],
                 )
 
         # ── 탭 간 "영상화" 버튼 공통 핸들러 ─────────────────────────────────
