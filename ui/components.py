@@ -31,6 +31,8 @@ from core.gemini_client import validate_api_key, generate_batch_images
 from core.kling_client import (
     validate_kling_keys,
     create_image_to_video_task,
+    create_start_end_frame_task,
+    create_video_reference_task,
     poll_task_result,
     download_video,
 )
@@ -119,13 +121,17 @@ def on_save_kling_keys(access_key: str, secret_key: str):
     return "💾 Kling API 키가 저장되었습니다."
 
 
-def build_generate_video_fn(gallery_state: GalleryState):
-    """영상 생성 버튼 클릭 핸들러 팩토리"""
+def build_unified_video_fn(gallery_state: GalleryState):
+    """레퍼런스 이미지 / 시작-끝 프레임 / 영상 레퍼런스 모드를 통합 처리하는 핸들러 팩토리"""
 
     def generate_video(
         access_key: str,
         secret_key: str,
-        ref_image,       # gr.Image → PIL Image or None
+        mode: str,           # "image" | "start_end" | "video_ref"
+        ref_image,           # 레퍼런스 이미지 모드 (PIL Image or ndarray)
+        start_image,         # 시작-끝 프레임 모드: 시작 프레임
+        end_image,           # 시작-끝 프레임 모드: 끝 프레임
+        ref_video,           # 영상 레퍼런스 모드: 파일 경로 (str)
         prompt: str,
         model_label: str,
         duration: int,
@@ -138,40 +144,64 @@ def build_generate_video_fn(gallery_state: GalleryState):
             gr.Warning("Kling Access Key와 Secret Key를 입력해주세요.")
             return None, "❌ API 키 없음"
 
-        # 레퍼런스 이미지 결정
-        pil_image: Optional[Image.Image] = None
-        if ref_image is not None:
-            if isinstance(ref_image, Image.Image):
-                pil_image = ref_image
-            else:
-                pil_image = Image.fromarray(ref_image).convert("RGB")
-
-        if pil_image is None:
-            gr.Warning("레퍼런스 이미지를 업로드하거나 갤러리에서 '영상화' 버튼을 클릭해주세요.")
-            return None, "❌ 레퍼런스 이미지 없음"
-
         model_cfg = KLING_MODELS[model_label]
         api_model = model_cfg["api_name"]
-        mode = model_cfg["mode"]
+        mode_api = model_cfg["mode"]
 
         progress(0.05, desc="영상 생성 작업 요청 중...")
+        endpoint = "image2video"
+
         try:
-            task_id = create_image_to_video_task(
-                access_key=ak,
-                secret_key=sk,
-                image=pil_image,
-                prompt=prompt or "",
-                model=api_model,
-                duration=int(duration),
-                aspect_ratio=aspect_ratio,
-                mode=mode,
-            )
+            if mode == "start_end":
+                if start_image is None or end_image is None:
+                    return None, "❌ 시작 프레임과 끝 프레임을 모두 업로드해주세요."
+                start_pil = (
+                    start_image if isinstance(start_image, Image.Image)
+                    else Image.fromarray(start_image).convert("RGB")
+                )
+                end_pil = (
+                    end_image if isinstance(end_image, Image.Image)
+                    else Image.fromarray(end_image).convert("RGB")
+                )
+                task_id = create_start_end_frame_task(
+                    access_key=ak, secret_key=sk,
+                    start_image=start_pil, end_image=end_pil,
+                    prompt=prompt or "", model=api_model,
+                    duration=int(duration), aspect_ratio=aspect_ratio,
+                    mode=mode_api,
+                )
+            elif mode == "video_ref":
+                if ref_video is None:
+                    return None, "❌ 레퍼런스 영상을 업로드해주세요."
+                video_path = ref_video if isinstance(ref_video, str) else str(ref_video)
+                task_id = create_video_reference_task(
+                    access_key=ak, secret_key=sk,
+                    video_path=video_path,
+                    prompt=prompt or "", model=api_model,
+                    duration=int(duration), aspect_ratio=aspect_ratio,
+                    mode=mode_api,
+                )
+                endpoint = "video2video"
+            else:
+                # 레퍼런스 이미지 모드 (기본)
+                if ref_image is None:
+                    gr.Warning("레퍼런스 이미지를 업로드하거나 갤러리에서 '영상화' 버튼을 클릭해주세요.")
+                    return None, "❌ 레퍼런스 이미지 없음"
+                pil_image = (
+                    ref_image if isinstance(ref_image, Image.Image)
+                    else Image.fromarray(ref_image).convert("RGB")
+                )
+                task_id = create_image_to_video_task(
+                    access_key=ak, secret_key=sk,
+                    image=pil_image,
+                    prompt=prompt or "", model=api_model,
+                    duration=int(duration), aspect_ratio=aspect_ratio,
+                    mode=mode_api,
+                )
         except Exception as e:
             return None, f"❌ 작업 생성 실패: {e}"
 
         progress(0.15, desc=f"대기 중... (task_id: {task_id[:8]}…)")
-
-        video_url = None
 
         def on_poll(elapsed, status):
             frac = min(0.15 + elapsed / 300 * 0.80, 0.95)
@@ -179,11 +209,9 @@ def build_generate_video_fn(gallery_state: GalleryState):
 
         try:
             video_url = poll_task_result(
-                access_key=ak,
-                secret_key=sk,
-                task_id=task_id,
-                timeout=300,
-                poll_interval=5,
+                access_key=ak, secret_key=sk,
+                task_id=task_id, endpoint=endpoint,
+                timeout=300, poll_interval=5,
                 progress_callback=on_poll,
             )
         except TimeoutError as e:
@@ -642,10 +670,13 @@ def build_ui() -> gr.Blocks:
                 gr.Markdown(
                     """
                     ### 🎬 Kling AI 영상 생성
-                    이미지 생성 탭의 갤러리에서 **영상화** 버튼을 클릭하거나, 아래에 이미지를 직접 업로드하세요.
+                    입력 방식을 선택하고 설정을 조정한 뒤 **영상 생성** 버튼을 클릭하세요.
                     Kling API 키는 **API 키 설정** 탭에서 저장할 수 있습니다.
                     """
                 )
+
+                # 입력 모드 상태: "image" | "start_end" | "video_ref"
+                video_mode_state = gr.State("image")
 
                 with gr.Row():
                     with gr.Column(scale=1):
@@ -663,11 +694,44 @@ def build_ui() -> gr.Blocks:
                             type="password",
                         )
 
-                        gr.Markdown("#### 🖼️ 레퍼런스 이미지")
-                        ref_image_vid = gr.Image(
-                            label="레퍼런스 이미지 (갤러리에서 전송되거나 직접 업로드)",
-                            type="pil",
-                            height=220,
+                        gr.Markdown("#### 📥 입력 방식 선택")
+                        with gr.Tabs() as video_input_tabs:
+
+                            with gr.Tab("🖼️ 레퍼런스 이미지"):
+                                gr.Markdown("시작 프레임 역할을 할 이미지를 업로드하세요.")
+                                ref_image_vid = gr.Image(
+                                    label="레퍼런스 이미지 (갤러리에서 전송 또는 직접 업로드)",
+                                    type="pil",
+                                    height=200,
+                                )
+
+                            with gr.Tab("🎞️ 시작-끝 프레임"):
+                                gr.Markdown("시작 프레임과 끝 프레임을 각각 업로드하면 두 이미지 사이를 자연스럽게 이어주는 영상이 생성됩니다.")
+                                start_image_vid = gr.Image(
+                                    label="시작 프레임",
+                                    type="pil",
+                                    height=180,
+                                )
+                                end_image_vid = gr.Image(
+                                    label="끝 프레임",
+                                    type="pil",
+                                    height=180,
+                                )
+
+                            with gr.Tab("🎬 영상 레퍼런스"):
+                                gr.Markdown("3~10초 분량의 레퍼런스 영상을 업로드하세요. 영상의 스타일·움직임을 참고하여 새로운 영상을 생성합니다.")
+                                ref_video_vid = gr.Video(
+                                    label="레퍼런스 영상 (3~10초)",
+                                    height=200,
+                                )
+
+                        def _on_input_mode_change(evt: gr.SelectData):
+                            modes = ["image", "start_end", "video_ref"]
+                            return modes[evt.index] if 0 <= evt.index < len(modes) else "image"
+
+                        video_input_tabs.select(
+                            _on_input_mode_change,
+                            outputs=[video_mode_state],
                         )
 
                     with gr.Column(scale=2):
@@ -719,13 +783,17 @@ def build_ui() -> gr.Blocks:
                 gr.Markdown("#### 🎥 생성된 영상")
                 video_output = gr.Video(label="생성 결과", height=480)
 
-                generate_video_fn = build_generate_video_fn(gallery_state)
+                unified_video_fn = build_unified_video_fn(gallery_state)
                 btn_generate_video.click(
-                    generate_video_fn,
+                    unified_video_fn,
                     inputs=[
                         kling_access_vid,
                         kling_secret_vid,
+                        video_mode_state,
                         ref_image_vid,
+                        start_image_vid,
+                        end_image_vid,
+                        ref_video_vid,
                         kling_prompt_input,
                         kling_model_radio,
                         kling_duration_slider,
