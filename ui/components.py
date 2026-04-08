@@ -21,6 +21,7 @@ from config.settings import (
     MAX_COUNT,
     MAX_REFERENCE_IMAGES,
     SETTINGS_FILE,
+    OUTPUT_BASE_DIR,
     KLING_MODELS,
     KLING_DEFAULT_DURATION,
     KLING_DEFAULT_MODEL,
@@ -45,9 +46,23 @@ from core.image_utils import (
     save_video,
     create_zip_from_paths,
     load_existing_outputs,
+    load_existing_video_outputs,
     get_disk_usage_text,
 )
 from ui.gallery import GalleryState, GalleryItem
+
+
+# ── 경로 안전 검사 ──────────────────────────────────────────────────────────
+
+def _is_safe_output_path(path: str) -> bool:
+    """파일 경로가 반드시 outputs/ 디렉토리 내에 있는지 확인합니다."""
+    try:
+        output_base = Path(OUTPUT_BASE_DIR).resolve()
+        resolved = Path(path).resolve()
+        # Python 3.9+ Path.is_relative_to() 대신 호환성 있는 방법 사용
+        return str(resolved).startswith(str(output_base) + os.sep) or resolved == output_base
+    except Exception:
+        return False
 
 
 # ── 설정 파일 읽기/쓰기 ──────────────────────────────────────────────────────
@@ -380,6 +395,33 @@ def build_clear_fn(gallery_state: GalleryState):
     return clear_gallery
 
 
+def build_download_selected_fn(gallery_state: GalleryState):
+    """다중 선택된 이미지를 ZIP으로 다운로드하는 핸들러 팩토리"""
+
+    def download_selected(selected_json: str):
+        try:
+            indices = json.loads(selected_json or "[]")
+        except (json.JSONDecodeError, ValueError):
+            indices = []
+        if not indices:
+            gr.Warning("다운로드할 이미지를 먼저 선택해주세요.")
+            return None
+        paths = []
+        for raw_idx in indices:
+            try:
+                item = gallery_state.get_success_item_by_visual_index(int(raw_idx))
+                if item and item.image_path and os.path.exists(item.image_path):
+                    paths.append(item.image_path)
+            except (ValueError, TypeError):
+                continue
+        if not paths:
+            gr.Warning("선택된 이미지 파일을 찾을 수 없습니다.")
+            return None
+        return create_zip_from_paths(paths)
+
+    return download_selected
+
+
 # ── UI 빌더 ──────────────────────────────────────────────────────────────────
 
 def build_ui() -> gr.Blocks:
@@ -424,128 +466,220 @@ def build_ui() -> gr.Blocks:
     # 탭 전환을 위한 JavaScript (localStorage로 새로고침 시 탭 유지)
     TAB_PERSIST_JS = """
     <script>
+    // ── 탭 지속성 ────────────────────────────────────────────────────────────
     (function() {
         var TAB_KEY = 'keyImageGenTab';
-
-        function saveTab(idx) {
-            try { localStorage.setItem(TAB_KEY, String(idx)); } catch(e) {}
+        function saveTab(idx) { try { localStorage.setItem(TAB_KEY, String(idx)); } catch(e) { console.warn('Failed to save tab:', e); } }
+        function getTabBtns() {
+            var r = document.querySelectorAll('[role="tab"]');
+            return r.length ? Array.from(r) : Array.from(document.querySelectorAll('.tab-nav button'));
         }
-
-        function getTabButtons() {
-            // Gradio 5: role="tab" 속성 사용
-            var byRole = document.querySelectorAll('[role="tab"]');
-            if (byRole.length > 0) return Array.from(byRole);
-            // Fallback: older Gradio class
-            return Array.from(document.querySelectorAll('.tab-nav button'));
-        }
-
         function restoreTab() {
             try {
                 var idx = localStorage.getItem(TAB_KEY);
                 if (idx === null) return;
                 var attempt = 0;
-                // Poll up to 60 times (6 seconds) waiting for Gradio to render tab buttons
                 var iv = setInterval(function() {
-                    var buttons = getTabButtons();
-                    if (buttons.length > parseInt(idx)) {
-                        buttons[parseInt(idx)].click();
-                        clearInterval(iv);
-                    }
+                    var btns = getTabBtns();
+                    if (btns.length > parseInt(idx)) { btns[parseInt(idx)].click(); clearInterval(iv); }
                     if (++attempt > 60) clearInterval(iv);
                 }, 100);
             } catch(e) {}
         }
-
         document.addEventListener('click', function(e) {
             var btn = e.target.closest('[role="tab"]') || e.target.closest('.tab-nav button');
-            if (btn) {
-                var buttons = getTabButtons();
-                var idx = buttons.indexOf(btn);
-                if (idx >= 0) saveTab(idx);
-            }
+            if (btn) { var btns = getTabBtns(); var i = btns.indexOf(btn); if (i >= 0) saveTab(i); }
         }, true);
-
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', function() {
-                setTimeout(restoreTab, 500);
-            });
-        } else {
-            setTimeout(restoreTab, 500);
-        }
+        document.readyState === 'loading'
+            ? document.addEventListener('DOMContentLoaded', function() { setTimeout(restoreTab, 500); })
+            : setTimeout(restoreTab, 500);
     })();
 
-    // ── 갤러리 아이템 호버 오버레이 ────────────────────────────────────────
-    (function setupGalleryHoverActions() {
-        function clickGradioBtn(elemId) {
-            var el = document.getElementById(elemId);
-            if (!el) return;
-            var btn = el.tagName === 'BUTTON' ? el : el.querySelector('button');
-            if (btn) btn.click();
+    // ── 갤러리 호버 플로팅 오버레이 ─────────────────────────────────────────
+    (function() {
+        var CFGS = [
+            {id:'live-gallery', dl:'btn-download-gen',     vid:'btn-video-gen',     ref:'btn-ref-gen'},
+            {id:'full-gallery', dl:'btn-download-gallery', vid:'btn-video-gallery', ref:'btn-ref-gallery'}
+        ];
+
+        // body 최상위에 단일 플로팅 오버레이 생성 (갤러리 아이템 DOM 수정 없음)
+        var ov = document.createElement('div');
+        ov.id = 'gha-ov';
+        ov.style.cssText = [
+            'position:fixed', 'display:none', 'align-items:center', 'justify-content:center',
+            'gap:8px', 'z-index:10000', 'background:rgba(0,0,0,0.5)', 'border-radius:6px',
+            'box-sizing:border-box', 'padding:0 8px',
+            'pointer-events:none'   /* 배경은 클릭 통과 — 버튼만 pointer-events:auto */
+        ].join(';');
+
+        [{key:'dl',e:'⬇️',t:'PNG 다운로드'},{key:'vid',e:'🎬',t:'영상 레퍼런스'},{key:'ref',e:'🖼️',t:'이미지 레퍼런스'}]
+        .forEach(function(b) {
+            var el = document.createElement('button');
+            el.dataset.k = b.key; el.textContent = b.e; el.title = b.t;
+            el.style.cssText = [
+                'background:rgba(255,255,255,0.92)', 'border:none', 'border-radius:8px',
+                'font-size:1.2rem', 'cursor:pointer', 'width:44px', 'height:44px',
+                'display:flex', 'align-items:center', 'justify-content:center',
+                'box-shadow:0 2px 8px rgba(0,0,0,0.35)', 'flex-shrink:0', 'pointer-events:auto'
+            ].join(';');
+            ov.appendChild(el);
+        });
+        document.body.appendChild(ov);
+
+        var curItem = null, curCfg = null;
+
+        function cfgOf(el) {
+            for (var i = 0; i < CFGS.length; i++) {
+                var g = document.getElementById(CFGS[i].id);
+                if (g && g.contains(el)) return CFGS[i];
+            }
+            return null;
+        }
+        function itemOf(el) {
+            return el.closest('[data-testid="thumbnail"]')
+                || el.closest('.thumbnail-item')
+                || el.closest('[class*="thumbnail-item"]');
+        }
+        function posOv(item) {
+            var r = item.getBoundingClientRect();
+            ov.style.left = r.left + 'px'; ov.style.top = r.top + 'px';
+            ov.style.width = r.width + 'px'; ov.style.height = r.height + 'px';
+            ov.style.display = 'flex';
+        }
+        function hideOv() { ov.style.display = 'none'; curItem = null; curCfg = null; }
+        function gClick(id) {
+            var el = document.getElementById(id); if (!el) return;
+            var b = el.tagName === 'BUTTON' ? el : el.querySelector('button'); if (b) b.click();
         }
 
-        function setupGalleryItems(galleryId, downloadId, videoId, refId) {
-            var galleryEl = document.getElementById(galleryId);
-            if (!galleryEl) return;
+        document.addEventListener('mouseover', function(e) {
+            if (ov.contains(e.target)) return;
+            var cfg = cfgOf(e.target); if (!cfg) { hideOv(); return; }
+            var item = itemOf(e.target); if (!item) { hideOv(); return; }
+            curItem = item; curCfg = cfg; posOv(item);
+        });
+        ov.addEventListener('mouseleave', hideOv);
+        ov.addEventListener('mousedown', function(e) {
+            var btn = e.target.closest('[data-k]'); if (!btn || !curItem || !curCfg) return;
+            e.preventDefault(); e.stopPropagation();
+            var tid = curCfg[btn.dataset.k];
+            (curItem.querySelector('button') || curItem.querySelector('img') || curItem).click();
+            setTimeout(function() { gClick(tid); }, 250);
+        });
+        window.addEventListener('scroll', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); }, true);
+        window.addEventListener('resize', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); });
+    })();
 
-            // Gradio 5 gallery items selector
-            var items = galleryEl.querySelectorAll('.thumbnail-item');
-            if (!items.length) {
-                items = galleryEl.querySelectorAll('[class*="thumbnail"]');
+    // ── 다중 선택 ────────────────────────────────────────────────────────────
+    (function() {
+        var GIDS = ['live-gallery', 'full-gallery'];
+        var TBIDS = {'live-gallery': 'ms-state-gen', 'full-gallery': 'ms-state-gallery'};
+        var TOGGLE_IDS = {'live-gallery': 'ms-toggle-gen', 'full-gallery': 'ms-toggle-gallery'};
+        var active = {}, sels = {}, containers = {};
+        GIDS.forEach(function(id) { active[id] = false; sels[id] = new Set(); containers[id] = null; });
+
+        function getItems(gid) {
+            var g = document.getElementById(gid); if (!g) return [];
+            var r = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
+            if (!r.length) r = Array.from(g.querySelectorAll('.thumbnail-item'));
+            if (!r.length) r = Array.from(g.querySelectorAll('[class*="thumbnail-item"]'));
+            return r;
+        }
+        function getContainer(gid) {
+            if (!containers[gid]) {
+                var c = document.createElement('div');
+                c.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:9997;';
+                document.body.appendChild(c);
+                containers[gid] = c;
             }
-            if (!items.length) {
-                items = galleryEl.querySelectorAll('.grid-wrap > *');
+            return containers[gid];
+        }
+        function syncTextbox(gid) {
+            var wrapper = document.getElementById(TBIDS[gid]); if (!wrapper) return;
+            var inp = wrapper.querySelector('input[type="text"],textarea'); if (!inp) return;
+            var val = JSON.stringify([...sels[gid]]);
+            try {
+                Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(inp, val);
+            } catch(e) { console.warn('Native setter failed, using fallback:', e); inp.value = val; }
+            inp.dispatchEvent(new Event('input', {bubbles: true}));
+            inp.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+        function refreshOverlays(gid) {
+            var c = getContainer(gid), items = getItems(gid), isOn = active[gid], sel = sels[gid];
+            while (c.children.length > items.length) c.removeChild(c.lastChild);
+            while (c.children.length < items.length) {
+                var d = document.createElement('div');
+                d.style.cssText = 'position:fixed;box-sizing:border-box;display:flex;align-items:flex-start;justify-content:flex-start;padding:4px;';
+                var badge = document.createElement('div');
+                badge.className = 'ms-badge';
+                badge.style.cssText = [
+                    'width:22px', 'height:22px', 'border-radius:50%',
+                    'display:flex', 'align-items:center', 'justify-content:center',
+                    'font-size:0.85rem', 'font-weight:700', 'color:#fff',
+                    'box-shadow:0 1px 4px rgba(0,0,0,0.5)', 'user-select:none', 'pointer-events:none'
+                ].join(';');
+                d.appendChild(badge);
+                c.appendChild(d);
             }
-
-            items.forEach(function(item) {
-                if (item.classList.contains('gallery-item-with-overlay')) return;
-                if (item.querySelector('.gallery-hover-overlay')) return;
-
-                item.classList.add('gallery-item-with-overlay');
-                item.style.position = 'relative';
-
-                var overlay = document.createElement('div');
-                overlay.className = 'gallery-hover-overlay';
-
-                var actions = [
-                    { emoji: '⬇️', title: 'PNG 다운로드', id: downloadId },
-                    { emoji: '🎬', title: '영상 레퍼런스', id: videoId },
-                    { emoji: '🖼️', title: '이미지 레퍼런스', id: refId }
-                ];
-
-                actions.forEach(function(action) {
-                    var btn = document.createElement('button');
-                    btn.className = 'gallery-hover-action-btn';
-                    btn.innerHTML = action.emoji;
-                    btn.title = action.title;
-                    btn.addEventListener('mousedown', function(e) {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        // 갤러리 아이템 클릭으로 Gradio select 이벤트를 먼저 발생시킨 후
-                        var clickTarget = item.querySelector('button') || item.querySelector('img') || item;
-                        clickTarget.click();
-                        // Gradio가 select 이벤트를 처리하고 상태를 업데이트할 때까지 대기 (약 200ms)
-                        setTimeout(function() { clickGradioBtn(action.id); }, 220);
-                    });
-                    overlay.appendChild(btn);
-                });
-
-                item.appendChild(overlay);
+            items.forEach(function(item, idx) {
+                var r = item.getBoundingClientRect(), d = c.children[idx];
+                d.style.left = r.left + 'px'; d.style.top = r.top + 'px';
+                d.style.width = r.width + 'px'; d.style.height = r.height + 'px';
+                d.style.pointerEvents = isOn ? 'auto' : 'none';
+                d.style.zIndex = isOn ? '9997' : '0';
+                d.style.cursor = isOn ? 'pointer' : '';
+                var badge = d.querySelector('.ms-badge');
+                badge.style.display = isOn ? 'flex' : 'none';
+                badge.style.background = sel.has(idx) ? '#4f46e5' : 'rgba(0,0,0,0.4)';
+                badge.textContent = sel.has(idx) ? '✓' : '○';
+                d.onclick = null;
+                if (isOn) {
+                    d.onclick = (function(i) {
+                        return function(e) {
+                            e.stopPropagation(); e.preventDefault();
+                            if (sel.has(i)) sel.delete(i); else sel.add(i);
+                            refreshOverlays(gid); syncTextbox(gid);
+                        };
+                    })(idx);
+                }
             });
         }
-
-        function refreshAll() {
-            setupGalleryItems('live-gallery', 'btn-download-gen', 'btn-video-gen', 'btn-ref-gen');
-            setupGalleryItems('full-gallery', 'btn-download-gallery', 'btn-video-gallery', 'btn-ref-gallery');
+        function toggleMode(gid) {
+            active[gid] = !active[gid];
+            if (!active[gid]) { sels[gid].clear(); syncTextbox(gid); }
+            refreshOverlays(gid);
+            var wrapper = document.getElementById(TOGGLE_IDS[gid]);
+            if (wrapper) {
+                var b = wrapper.tagName === 'BUTTON' ? wrapper : wrapper.querySelector('button');
+                if (b) {
+                    b.style.background = active[gid] ? '#4f46e5' : '';
+                    b.style.color = active[gid] ? '#fff' : '';
+                }
+            }
         }
-
-        var observer = new MutationObserver(refreshAll);
-        observer.observe(document.body, { childList: true, subtree: true });
-
-        // Gradio renders gallery items asynchronously; retry at intervals
-        // to catch items that load after the initial page render.
-        setTimeout(refreshAll, 800);
-        setTimeout(refreshAll, 2000);
-        setTimeout(refreshAll, 4000);
+        // 토글 버튼 클릭 처리
+        document.addEventListener('click', function(e) {
+            if (e.target.closest('#ms-toggle-gen')) toggleMode('live-gallery');
+            else if (e.target.closest('#ms-toggle-gallery')) toggleMode('full-gallery');
+        });
+        // 갤러리 변경 감지 → 배지 갱신
+        var obs = new MutationObserver(function() {
+            GIDS.forEach(function(gid) { if (active[gid]) refreshOverlays(gid); });
+        });
+        function attachObs() {
+            GIDS.forEach(function(gid) {
+                var g = document.getElementById(gid);
+                if (g) obs.observe(g, {childList: true, subtree: true});
+            });
+        }
+        window.addEventListener('scroll', function() {
+            GIDS.forEach(function(gid) { if (active[gid]) refreshOverlays(gid); });
+        }, true);
+        window.addEventListener('resize', function() {
+            GIDS.forEach(function(gid) { if (active[gid]) refreshOverlays(gid); });
+        });
+        setTimeout(attachObs, 800);
+        setTimeout(function() { GIDS.forEach(refreshOverlays); }, 1500);
     })();
     </script>
     """
@@ -579,47 +713,10 @@ def build_ui() -> gr.Blocks:
         /* 전체화면·닫기·이전·다음 버튼 공통 */
         .icon-button { padding: 8px !important; }
 
-        /* 갤러리 아이템 호버 오버레이 */
-        .gallery-item-with-overlay {
-            position: relative !important;
-        }
-        .gallery-hover-overlay {
-            position: absolute;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.55);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            opacity: 0;
-            transition: opacity 0.15s ease;
-            z-index: 20;
-            border-radius: 6px;
-            pointer-events: none;
-        }
-        .gallery-item-with-overlay:hover .gallery-hover-overlay {
-            opacity: 1;
-            pointer-events: auto;
-        }
-        .gallery-hover-action-btn {
-            background: rgba(255, 255, 255, 0.92) !important;
-            border: none !important;
-            border-radius: 8px !important;
-            padding: 6px 10px !important;
-            font-size: 1.15rem !important;
-            cursor: pointer !important;
-            line-height: 1 !important;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.3) !important;
-            transition: background 0.1s, transform 0.1s !important;
-            min-width: 38px !important;
-            height: 38px !important;
-            display: flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-        }
-        .gallery-hover-action-btn:hover {
+        /* 호버 플로팅 오버레이 버튼 hover 효과 */
+        #gha-ov button:hover {
             background: #fff !important;
-            transform: scale(1.12) !important;
+            transform: scale(1.12);
         }
         """,
     ) as demo:
@@ -817,6 +914,27 @@ def build_ui() -> gr.Blocks:
                         elem_id="btn-ref-gen",
                     )
                 single_png_output_gen = gr.File(label="PNG 다운로드", visible=True)
+                with gr.Row():
+                    btn_multi_select_gen = gr.Button(
+                        "☑️ 다중 선택",
+                        variant="secondary",
+                        size="sm",
+                        scale=1,
+                        elem_id="ms-toggle-gen",
+                    )
+                    ms_state_gen = gr.Textbox(
+                        value="[]",
+                        visible=False,
+                        elem_id="ms-state-gen",
+                        interactive=True,
+                    )
+                    btn_download_selected_gen = gr.Button(
+                        "📦 선택 항목 ZIP",
+                        variant="secondary",
+                        size="sm",
+                        scale=1,
+                    )
+                selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", visible=True)
 
                 # 모델 선택 변경 시 설명 업데이트
                 def update_model_info(m):
@@ -880,6 +998,13 @@ def build_ui() -> gr.Blocks:
                     _use_as_ref,
                     inputs=[selected_img_idx_gen, ref_image_upload],
                     outputs=[ref_image_upload],
+                )
+
+                download_selected_gen_fn = build_download_selected_fn(gallery_state)
+                btn_download_selected_gen.click(
+                    download_selected_gen_fn,
+                    inputs=[ms_state_gen],
+                    outputs=[selected_zip_output_gen],
                 )
 
             # ── 탭 3: 영상 생성 (Kling) ──────────────────────────────────────
@@ -1000,6 +1125,30 @@ def build_ui() -> gr.Blocks:
                 gr.Markdown("#### 🎥 생성된 영상")
                 video_output = gr.Video(label="생성 결과", height=720)
 
+                # ── 이전에 생성된 영상 목록 ──────────────────────────────────
+                gr.Markdown("#### 📹 이전에 생성된 영상 목록")
+                existing_videos = load_existing_video_outputs()
+                _vid_choices = [(v["label"], v["path"]) for v in existing_videos]
+
+                with gr.Row():
+                    btn_refresh_videos = gr.Button("🔄 목록 새로고침", variant="secondary", size="sm", scale=1)
+                    btn_download_selected_videos = gr.Button(
+                        "📦 선택 영상 ZIP 다운로드", variant="secondary", size="sm", scale=1
+                    )
+                video_gallery_dropdown = gr.Dropdown(
+                    choices=_vid_choices,
+                    label="생성된 영상 (최신순) — 항목 선택 시 아래에서 재생, 여러 항목 선택 후 ZIP 다운로드 가능",
+                    multiselect=True,
+                    interactive=True,
+                    value=None,
+                )
+                video_gallery_player = gr.Video(
+                    label="선택한 영상 재생",
+                    height=480,
+                    visible=bool(_vid_choices),
+                )
+                selected_videos_zip_output = gr.File(label="선택 영상 ZIP 다운로드", visible=True)
+
                 def _on_kling_model_change(model_label: str):
                     """Omni 모델(supports_video_reference=True)에서만 영상 레퍼런스 탭 표시"""
                     supports = KLING_MODELS.get(model_label, {}).get("supports_video_reference", False)
@@ -1028,6 +1177,58 @@ def build_ui() -> gr.Blocks:
                         kling_quality_dropdown,
                     ],
                     outputs=[video_output, video_status],
+                ).then(
+                    lambda: (
+                        gr.update(
+                            choices=[(v["label"], v["path"]) for v in load_existing_video_outputs()],
+                            value=None,
+                        ),
+                        gr.update(visible=True),
+                    ),
+                    outputs=[video_gallery_dropdown, video_gallery_player],
+                )
+
+                def on_video_gallery_select(paths):
+                    if not paths:
+                        return gr.update(value=None, visible=False)
+                    path = paths[0] if isinstance(paths, list) else paths
+                    if path and _is_safe_output_path(path) and os.path.exists(path):
+                        return gr.update(value=path, visible=True)
+                    return gr.update(value=None, visible=False)
+
+                video_gallery_dropdown.change(
+                    on_video_gallery_select,
+                    inputs=[video_gallery_dropdown],
+                    outputs=[video_gallery_player],
+                )
+
+                def refresh_video_gallery():
+                    videos = load_existing_video_outputs()
+                    choices = [(v["label"], v["path"]) for v in videos]
+                    return gr.update(choices=choices, value=None), gr.update(visible=bool(choices))
+
+                btn_refresh_videos.click(
+                    refresh_video_gallery,
+                    outputs=[video_gallery_dropdown, video_gallery_player],
+                )
+
+                def download_selected_videos(paths):
+                    if not paths:
+                        gr.Warning("다운로드할 영상을 선택해주세요.")
+                        return None
+                    existing = [
+                        p for p in paths
+                        if p and _is_safe_output_path(p) and os.path.exists(p)
+                    ]
+                    if not existing:
+                        gr.Warning("선택한 영상 파일을 찾을 수 없습니다.")
+                        return None
+                    return create_zip_from_paths(existing)
+
+                btn_download_selected_videos.click(
+                    download_selected_videos,
+                    inputs=[video_gallery_dropdown],
+                    outputs=[selected_videos_zip_output],
                 )
 
             # ── 탭 4: 갤러리 & 다운로드 ──────────────────────────────────────
@@ -1084,6 +1285,27 @@ def build_ui() -> gr.Blocks:
 
                 single_png_output_gallery = gr.File(label="PNG 다운로드", visible=True)
                 zip_file_output = gr.File(label="ZIP 다운로드", visible=True)
+                with gr.Row():
+                    btn_multi_select_gallery = gr.Button(
+                        "☑️ 다중 선택",
+                        variant="secondary",
+                        size="sm",
+                        scale=1,
+                        elem_id="ms-toggle-gallery",
+                    )
+                    ms_state_gallery = gr.Textbox(
+                        value="[]",
+                        visible=False,
+                        elem_id="ms-state-gallery",
+                        interactive=True,
+                    )
+                    btn_download_selected_gallery = gr.Button(
+                        "📦 선택 항목 ZIP",
+                        variant="secondary",
+                        size="sm",
+                        scale=1,
+                    )
+                selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", visible=True)
 
                 def refresh_gallery():
                     return (
@@ -1119,6 +1341,13 @@ def build_ui() -> gr.Blocks:
                     _use_as_ref,
                     inputs=[selected_img_idx_gallery, ref_image_upload],
                     outputs=[ref_image_upload],
+                )
+
+                download_selected_gallery_fn = build_download_selected_fn(gallery_state)
+                btn_download_selected_gallery.click(
+                    download_selected_gallery_fn,
+                    inputs=[ms_state_gallery],
+                    outputs=[selected_zip_output_gallery],
                 )
 
         # ── 탭 간 "영상화" 버튼 공통 핸들러 ─────────────────────────────────
