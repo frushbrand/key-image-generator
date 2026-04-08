@@ -252,7 +252,6 @@ def build_generate_fn(gallery_state: GalleryState):
         quality: str,
         count: int,
         ref_images,          # Gradio File 컴포넌트 값 (list of paths or None)
-        gallery_ref_image,   # 갤러리에서 선택한 이미지 레퍼런스 (PIL Image or None)
         progress=gr.Progress(track_tqdm=True),
     ):
         cfg = load_settings()
@@ -273,13 +272,6 @@ def build_generate_fn(gallery_state: GalleryState):
         if ref_images:
             paths = [r if isinstance(r, str) else r.path for r in ref_images if r is not None]
             ref_pil_images = load_reference_images(paths[:MAX_REFERENCE_IMAGES])
-        # 갤러리에서 선택한 레퍼런스 이미지를 앞에 추가
-        if gallery_ref_image is not None:
-            gal_pil = (
-                gallery_ref_image if isinstance(gallery_ref_image, Image.Image)
-                else Image.fromarray(gallery_ref_image).convert("RGB")
-            )
-            ref_pil_images = [gal_pil] + ref_pil_images
 
         completed = [0]
         new_items: list[GalleryItem] = []
@@ -392,14 +384,31 @@ def build_ui() -> gr.Blocks:
     saved_kling_access = saved.get("kling_access_key", "")
     saved_kling_secret = saved.get("kling_secret_key", "")
 
-    def _use_as_ref(idx: int):
-        """선택된 이미지를 이미지 생성 레퍼런스로 설정하는 공용 핸들러."""
+    def _use_as_ref(idx: int, current_files):
+        """선택된 이미지를 레퍼런스 이미지 업로드 칸에 추가하는 공용 핸들러."""
+        import tempfile
         success_items = [i for i in gallery_state.items if i.status == "success"]
         if not (0 <= idx < len(success_items)):
             gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
-            return None, "없음"
+            return gr.update()
         item = success_items[idx]
-        return item.image, f"#{idx + 1}번 이미지 (레퍼런스로 설정됨)"
+
+        current_paths = []
+        if current_files:
+            current_paths = [f if isinstance(f, str) else f.path for f in current_files if f is not None]
+
+        if len(current_paths) >= MAX_REFERENCE_IMAGES:
+            gr.Warning(f"레퍼런스 이미지는 최대 {MAX_REFERENCE_IMAGES}장까지 추가할 수 있습니다.")
+            return gr.update()
+
+        if item.image_path and os.path.exists(item.image_path):
+            return gr.update(value=current_paths + [item.image_path])
+
+        # 저장된 경로가 없으면 임시 파일로 저장
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp_path = tmp.name
+        item.image.save(tmp_path)
+        return gr.update(value=current_paths + [tmp_path])
 
     # 탭 전환을 위한 JavaScript (localStorage로 새로고침 시 탭 유지)
     TAB_PERSIST_JS = """
@@ -477,7 +486,6 @@ def build_ui() -> gr.Blocks:
         # 탭 간 이미지 전달용 상태
         selected_img_idx_gen = gr.State(-1)      # 이미지 생성 탭 갤러리 선택 인덱스
         selected_img_idx_gallery = gr.State(-1)  # 갤러리 탭 선택 인덱스
-        gallery_ref_state = gr.State(None)       # 갤러리에서 선택한 이미지 생성 레퍼런스
 
         with gr.Tabs() as main_tabs:
 
@@ -648,12 +656,6 @@ def build_ui() -> gr.Blocks:
                         variant="secondary",
                         scale=1,
                     )
-                gallery_ref_notice_gen = gr.Textbox(
-                    label="이미지 생성 레퍼런스",
-                    value="없음",
-                    interactive=False,
-                    scale=3,
-                )
                 single_png_output_gen = gr.File(label="PNG 다운로드", visible=True)
 
                 # 모델 선택 변경 시 설명 업데이트
@@ -686,7 +688,6 @@ def build_ui() -> gr.Blocks:
                         quality_dropdown,
                         count_slider,
                         ref_image_upload,
-                        gallery_ref_state,
                     ],
                     outputs=[live_gallery, gen_status, ref_preview],
                 )
@@ -713,8 +714,8 @@ def build_ui() -> gr.Blocks:
 
                 btn_use_as_ref_gen.click(
                     _use_as_ref,
-                    inputs=[selected_img_idx_gen],
-                    outputs=[gallery_ref_state, gallery_ref_notice_gen],
+                    inputs=[selected_img_idx_gen, ref_image_upload],
+                    outputs=[ref_image_upload],
                 )
 
             # ── 탭 3: 영상 생성 (Kling) ──────────────────────────────────────
@@ -890,12 +891,6 @@ def build_ui() -> gr.Blocks:
                         variant="secondary",
                         scale=1,
                     )
-                gallery_ref_notice_gal = gr.Textbox(
-                    label="이미지 생성 레퍼런스",
-                    value="없음",
-                    interactive=False,
-                    scale=3,
-                )
 
                 single_png_output_gallery = gr.File(label="PNG 다운로드", visible=True)
                 zip_file_output = gr.File(label="ZIP 다운로드", visible=True)
@@ -928,8 +923,8 @@ def build_ui() -> gr.Blocks:
 
                 btn_use_as_ref_gallery.click(
                     _use_as_ref,
-                    inputs=[selected_img_idx_gallery],
-                    outputs=[gallery_ref_state, gallery_ref_notice_gal],
+                    inputs=[selected_img_idx_gallery, ref_image_upload],
+                    outputs=[ref_image_upload],
                 )
 
         # ── 탭 간 "영상화" 버튼 공통 핸들러 ─────────────────────────────────
