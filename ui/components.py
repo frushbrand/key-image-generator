@@ -506,27 +506,31 @@ def build_ui() -> gr.Blocks:
         var ov = document.createElement('div');
         ov.id = 'gha-ov';
         ov.style.cssText = [
-            'position:fixed', 'display:none', 'align-items:center', 'justify-content:center',
-            'gap:8px', 'z-index:10000', 'background:rgba(0,0,0,0.5)', 'border-radius:6px',
-            'box-sizing:border-box', 'padding:0 8px',
-            'pointer-events:none'   /* 배경은 클릭 통과 — 버튼만 pointer-events:auto */
+            'position:fixed', 'display:none', 'align-items:flex-end', 'justify-content:flex-end',
+            'padding:6px', 'gap:5px',
+            'z-index:10000',
+            'box-sizing:border-box',
+            'pointer-events:none'
         ].join(';');
 
-        [{key:'dl',e:'⬇️',t:'PNG 다운로드'},{key:'vid',e:'🎬',t:'영상 레퍼런스'},{key:'ref',e:'🖼️',t:'이미지 레퍼런스'}]
+        [{key:'dl',e:'⬇️',t:'PNG 다운로드',l:'PNG'},{key:'vid',e:'🎬',t:'영상화',l:'영상화'},{key:'ref',e:'🖼️',t:'레퍼런스',l:'레퍼런스'}]
         .forEach(function(b) {
             var el = document.createElement('button');
-            el.dataset.k = b.key; el.textContent = b.e; el.title = b.t;
+            el.dataset.k = b.key; el.title = b.t;
+            el.innerHTML = b.e + ' <span style="font-size:0.78rem">' + b.l + '</span>';
             el.style.cssText = [
-                'background:rgba(255,255,255,0.92)', 'border:none', 'border-radius:8px',
-                'font-size:1.2rem', 'cursor:pointer', 'width:44px', 'height:44px',
-                'display:flex', 'align-items:center', 'justify-content:center',
-                'box-shadow:0 2px 8px rgba(0,0,0,0.35)', 'flex-shrink:0', 'pointer-events:auto'
+                'background:rgba(20,20,20,0.72)', 'border:none', 'border-radius:5px',
+                'font-size:0.9rem', 'cursor:pointer', 'padding:3px 8px', 'height:28px',
+                'display:flex', 'align-items:center', 'justify-content:center', 'gap:3px',
+                'color:#fff', 'white-space:nowrap', 'font-weight:500',
+                'box-shadow:0 1px 4px rgba(0,0,0,0.5)', 'flex-shrink:0', 'pointer-events:auto',
+                'backdrop-filter:blur(2px)'
             ].join(';');
             ov.appendChild(el);
         });
         document.body.appendChild(ov);
 
-        var curItem = null, curCfg = null;
+        var curItem = null, curCfg = null, curItemIdx = -1;
 
         function cfgOf(el) {
             for (var i = 0; i < CFGS.length; i++) {
@@ -540,13 +544,24 @@ def build_ui() -> gr.Blocks:
                 || el.closest('.thumbnail-item')
                 || el.closest('[class*="thumbnail-item"]');
         }
+        function getItems(cfg) {
+            var g = document.getElementById(cfg.id); if (!g) return [];
+            var r = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
+            if (!r.length) r = Array.from(g.querySelectorAll('.thumbnail-item'));
+            if (!r.length) r = Array.from(g.querySelectorAll('[class*="thumbnail-item"]'));
+            return r;
+        }
         function posOv(item) {
             var r = item.getBoundingClientRect();
             ov.style.left = r.left + 'px'; ov.style.top = r.top + 'px';
             ov.style.width = r.width + 'px'; ov.style.height = r.height + 'px';
             ov.style.display = 'flex';
         }
-        function hideOv() { ov.style.display = 'none'; curItem = null; curCfg = null; }
+        function hideOv() {
+            var prevGid = curCfg ? curCfg.id : null;
+            ov.style.display = 'none'; curItem = null; curCfg = null; curItemIdx = -1;
+            if (prevGid !== null && window.__msUpdateHover) window.__msUpdateHover(prevGid, -1);
+        }
         function gClick(id) {
             var el = document.getElementById(id); if (!el) return;
             var b = el.tagName === 'BUTTON' ? el : el.querySelector('button'); if (b) b.click();
@@ -556,7 +571,11 @@ def build_ui() -> gr.Blocks:
             if (ov.contains(e.target)) return;
             var cfg = cfgOf(e.target); if (!cfg) { hideOv(); return; }
             var item = itemOf(e.target); if (!item) { hideOv(); return; }
-            curItem = item; curCfg = cfg; posOv(item);
+            var newIdx = getItems(cfg).indexOf(item);
+            var changed = (curCfg !== cfg || curItemIdx !== newIdx);
+            curItem = item; curCfg = cfg; curItemIdx = newIdx;
+            posOv(item);
+            if (changed && window.__msUpdateHover) window.__msUpdateHover(cfg.id, newIdx);
         });
         ov.addEventListener('mouseleave', hideOv);
         ov.addEventListener('mousedown', function(e) {
@@ -570,13 +589,34 @@ def build_ui() -> gr.Blocks:
         window.addEventListener('resize', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); });
     })();
 
-    // ── 다중 선택 (항상 표시, 토글 없음) ───────────────────────────────────
+    // ── 다중 선택 (호버 시 체크박스 표시, 선택 시 항상 표시) ────────────────
     (function() {
         var GIDS = ['live-gallery', 'full-gallery'];
         var TBIDS = {'live-gallery': 'ms-state-gen', 'full-gallery': 'ms-state-gallery'};
         var CLEAR_IDS = {'live-gallery': 'ms-toggle-gen', 'full-gallery': 'ms-toggle-gallery'};
         var sels = {}, containers = {};
+        var hoverGid = null, hoverIdx = -1;
         GIDS.forEach(function(id) { sels[id] = new Set(); containers[id] = null; });
+
+        // 호버 오버레이 섹션에서 호출: 마우스가 올라간 갤러리/인덱스 알림
+        window.__msUpdateHover = function(gid, idx) {
+            var prevGid = hoverGid, prevIdx = hoverIdx;
+            hoverGid = (idx >= 0) ? gid : null;
+            hoverIdx = idx;
+            if (prevGid) updateBadgeOpacity(prevGid);
+            if (gid) updateBadgeOpacity(gid);
+        };
+
+        function updateBadgeOpacity(gid) {
+            var c = containers[gid]; if (!c) return;
+            var isHoverGid = (hoverGid === gid);
+            for (var i = 0; i < c.children.length; i++) {
+                var badge = c.children[i].querySelector('.ms-badge'); if (!badge) continue;
+                var isSelected = sels[gid].has(i);
+                var isHovered = isHoverGid && (i === hoverIdx);
+                badge.style.opacity = (isSelected || isHovered) ? '1' : '0';
+            }
+        }
 
         function getItems(gid) {
             var g = document.getElementById(gid); if (!g) return [];
@@ -607,6 +647,7 @@ def build_ui() -> gr.Blocks:
         }
         function refreshOverlays(gid) {
             var c = getContainer(gid), items = getItems(gid), sel = sels[gid];
+            var isHoverGid = (hoverGid === gid);
             while (c.children.length > items.length) c.removeChild(c.lastChild);
             while (c.children.length < items.length) {
                 var d = document.createElement('div');
@@ -616,11 +657,12 @@ def build_ui() -> gr.Blocks:
                 badge.style.cssText = [
                     'width:22px', 'height:22px', 'border-radius:50%',
                     'display:flex', 'align-items:center', 'justify-content:center',
-                    'font-size:0.85rem', 'font-weight:700', 'color:#fff',
+                    'font-size:0.85rem', 'font-weight:700',
                     'box-shadow:0 1px 4px rgba(0,0,0,0.5)', 'user-select:none',
                     'pointer-events:auto', 'cursor:pointer',
-                    'transition:background 0.15s',
-                    'border:2px solid rgba(255,255,255,0.7)'
+                    'transition:opacity 0.15s, background 0.15s',
+                    'border:2px solid rgba(255,255,255,0.7)',
+                    'opacity:0'
                 ].join(';');
                 d.appendChild(badge);
                 c.appendChild(d);
@@ -630,9 +672,13 @@ def build_ui() -> gr.Blocks:
                 d.style.left = r.left + 'px'; d.style.top = r.top + 'px';
                 d.style.width = r.width + 'px'; d.style.height = r.height + 'px';
                 var badge = d.querySelector('.ms-badge');
-                badge.style.background = sel.has(idx) ? '#4f46e5' : 'rgba(0,0,0,0.35)';
-                badge.style.borderColor = sel.has(idx) ? '#fff' : 'rgba(255,255,255,0.7)';
-                badge.textContent = sel.has(idx) ? '✓' : '';
+                var isSelected = sel.has(idx);
+                var isHovered = isHoverGid && (idx === hoverIdx);
+                badge.style.background = isSelected ? '#4f46e5' : 'rgba(255,255,255,0.85)';
+                badge.style.borderColor = isSelected ? '#4f46e5' : 'rgba(0,0,0,0.35)';
+                badge.style.color = isSelected ? '#fff' : 'transparent';
+                badge.textContent = isSelected ? '✓' : '';
+                badge.style.opacity = (isSelected || isHovered) ? '1' : '0';
                 badge.onclick = null;
                 badge.onclick = (function(i) {
                     return function(e) {
@@ -763,8 +809,8 @@ def build_ui() -> gr.Blocks:
 
         /* 호버 플로팅 오버레이 버튼 hover 효과 */
         #gha-ov button:hover {
-            background: #fff !important;
-            transform: scale(1.12);
+            background: rgba(40,40,40,0.92) !important;
+            transform: scale(1.08);
         }
 
         /* 레퍼런스 파일 삭제 버튼이 다른 버튼에 가려지지 않도록 */
@@ -822,11 +868,22 @@ def build_ui() -> gr.Blocks:
             align-items: center !important;
             justify-content: center !important;
         }
-        /* 파일 컴포넌트 우상단 아이콘 버튼 */
-        .file-upload .icon-button,
-        .gradio-file > .wrap > .icon-button,
-        [data-testid="file-upload"] .icon-button {
-            z-index: 10 !important;
+        /* 파일 컴포넌트 헤더 아이콘 버튼(업로드·전체삭제) 숨김 */
+        [data-testid="file-upload"] .icon-button,
+        .gradio-file .icon-button,
+        .file-upload .icon-button {
+            display: none !important;
+        }
+        /* 파일 목록 아이템 내 개별 삭제 버튼은 표시 유지 */
+        [data-testid="file-upload"] li button,
+        [data-testid="file-upload"] li .icon-button,
+        .gradio-file li button,
+        .gradio-file li .icon-button,
+        .file-upload li button {
+            display: flex !important;
+            pointer-events: auto !important;
+            opacity: 1 !important;
+            visibility: visible !important;
         }
         """,
     ) as demo:
@@ -1031,28 +1088,26 @@ def build_ui() -> gr.Blocks:
                         scale=1,
                         elem_id="btn-ref-gen",
                     )
-                single_png_output_gen = gr.File(label="PNG 다운로드", visible=True, elem_id="single-png-gen")
-                with gr.Row():
-                    btn_multi_select_gen = gr.Button(
-                        "✖️ 선택 초기화",
-                        variant="secondary",
-                        size="sm",
-                        scale=1,
-                        elem_id="ms-toggle-gen",
-                    )
-                    ms_state_gen = gr.Textbox(
-                        value="[]",
-                        visible=False,
-                        elem_id="ms-state-gen",
-                        interactive=True,
-                    )
                     btn_download_selected_gen = gr.Button(
                         "📦 선택 항목 ZIP",
                         variant="secondary",
-                        size="sm",
                         scale=1,
                     )
-                selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", visible=True, elem_id="selected-zip-gen")
+                single_png_output_gen = gr.File(label="PNG 다운로드", visible=False, elem_id="single-png-gen")
+                ms_state_gen = gr.Textbox(
+                    value="[]",
+                    visible=False,
+                    elem_id="ms-state-gen",
+                    interactive=True,
+                )
+                btn_multi_select_gen = gr.Button(
+                    "✖️ 선택 초기화",
+                    variant="secondary",
+                    size="sm",
+                    elem_id="ms-toggle-gen",
+                    visible=False,
+                )
+                selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", visible=False, elem_id="selected-zip-gen")
 
                 # 모델 선택 변경 시 설명 업데이트
                 def update_model_info(m):
@@ -1451,30 +1506,28 @@ def build_ui() -> gr.Blocks:
                         scale=1,
                         elem_id="btn-ref-gallery",
                     )
-
-                single_png_output_gallery = gr.File(label="PNG 다운로드", visible=True, elem_id="single-png-gallery")
-                zip_file_output = gr.File(label="ZIP 다운로드", visible=True, elem_id="full-zip-gallery")
-                with gr.Row():
-                    btn_multi_select_gallery = gr.Button(
-                        "✖️ 선택 초기화",
-                        variant="secondary",
-                        size="sm",
-                        scale=1,
-                        elem_id="ms-toggle-gallery",
-                    )
-                    ms_state_gallery = gr.Textbox(
-                        value="[]",
-                        visible=False,
-                        elem_id="ms-state-gallery",
-                        interactive=True,
-                    )
                     btn_download_selected_gallery = gr.Button(
                         "📦 선택 항목 ZIP",
                         variant="secondary",
-                        size="sm",
                         scale=1,
                     )
-                selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", visible=True, elem_id="selected-zip-gallery")
+
+                single_png_output_gallery = gr.File(label="PNG 다운로드", visible=False, elem_id="single-png-gallery")
+                zip_file_output = gr.File(label="ZIP 다운로드", visible=False, elem_id="full-zip-gallery")
+                ms_state_gallery = gr.Textbox(
+                    value="[]",
+                    visible=False,
+                    elem_id="ms-state-gallery",
+                    interactive=True,
+                )
+                btn_multi_select_gallery = gr.Button(
+                    "✖️ 선택 초기화",
+                    variant="secondary",
+                    size="sm",
+                    elem_id="ms-toggle-gallery",
+                    visible=False,
+                )
+                selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", visible=False, elem_id="selected-zip-gallery")
 
                 def refresh_gallery():
                     return (
