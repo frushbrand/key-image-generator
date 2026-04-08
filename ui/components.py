@@ -42,6 +42,8 @@ from core.image_utils import (
     save_image,
     save_video,
     create_zip_from_paths,
+    load_existing_outputs,
+    get_disk_usage_text,
 )
 from ui.gallery import GalleryState, GalleryItem
 
@@ -384,6 +386,21 @@ def build_ui() -> gr.Blocks:
     saved_kling_access = saved.get("kling_access_key", "")
     saved_kling_secret = saved.get("kling_secret_key", "")
 
+    # 기존 outputs/ 디렉토리의 이미지를 갤러리 상태에 로드
+    for i, entry in enumerate(load_existing_outputs()):
+        gallery_state.add(
+            GalleryItem(
+                image=entry["image"],
+                image_path=entry["image_path"],
+                model=entry["model"],
+                ratio=entry["ratio"],
+                quality=entry["quality"],
+                prompt=entry["prompt"],
+                index=i,
+                status="success",
+            )
+        )
+
     def _use_as_ref(idx: int, current_files: list):
         """선택된 이미지를 레퍼런스 이미지 업로드 칸에 추가하는 공용 핸들러."""
         success_items = [i for i in gallery_state.items if i.status == "success"]
@@ -464,6 +481,27 @@ def build_ui() -> gr.Blocks:
         .title-text { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.2rem; }
         .subtitle-text { color: #666; margin-bottom: 1rem; }
         .generate-btn { background: #4f46e5 !important; color: white !important; font-size: 1.1rem !important; }
+
+        /* 갤러리 라이트박스/이미지 뷰어 버튼 크기 확대 */
+        .lightbox button,
+        .lightbox .icon-button,
+        [data-testid="lightbox"] button,
+        .gallery-container .icon-button,
+        button.icon-button {
+            width: 48px !important;
+            height: 48px !important;
+            font-size: 1.4rem !important;
+            min-width: 48px !important;
+        }
+        .lightbox svg,
+        [data-testid="lightbox"] svg,
+        .gallery-container button svg,
+        button.icon-button svg {
+            width: 28px !important;
+            height: 28px !important;
+        }
+        /* 전체화면·닫기·이전·다음 버튼 공통 */
+        .icon-button { padding: 8px !important; }
         """,
     ) as demo:
 
@@ -624,6 +662,7 @@ def build_ui() -> gr.Blocks:
                     columns=4,
                     height=700,
                     object_fit="contain",
+                    value=gallery_state.to_gradio_gallery(),
                 )
                 with gr.Row():
                     btn_refresh_gen = gr.Button("🔄 새로고침", variant="secondary", scale=1)
@@ -843,6 +882,8 @@ def build_ui() -> gr.Blocks:
             with gr.Tab("📁 갤러리 & 다운로드", id="tab_gallery"):
                 gr.Markdown("### 생성된 이미지 전체 보기 및 다운로드")
 
+                disk_usage_md = gr.Markdown(get_disk_usage_text())
+
                 with gr.Row():
                     btn_refresh = gr.Button("🔄 갤러리 새로고침", variant="secondary")
                     btn_download_zip = gr.Button("⬇️ 전체 ZIP 다운로드", variant="primary")
@@ -850,7 +891,7 @@ def build_ui() -> gr.Blocks:
 
                 gallery_status = gr.Textbox(
                     label="상태",
-                    value="아직 생성된 이미지가 없습니다.",
+                    value=gallery_state.get_summary(),
                     interactive=False,
                 )
 
@@ -859,6 +900,7 @@ def build_ui() -> gr.Blocks:
                     columns=4,
                     height=600,
                     object_fit="contain",
+                    value=gallery_state.to_gradio_gallery(),
                 )
 
                 with gr.Row():
@@ -888,9 +930,13 @@ def build_ui() -> gr.Blocks:
                 zip_file_output = gr.File(label="ZIP 다운로드", visible=True)
 
                 def refresh_gallery():
-                    return gallery_state.to_gradio_gallery(), gallery_state.get_summary()
+                    return (
+                        gallery_state.to_gradio_gallery(),
+                        gallery_state.get_summary(),
+                        get_disk_usage_text(),
+                    )
 
-                btn_refresh.click(refresh_gallery, outputs=[full_gallery, gallery_status])
+                btn_refresh.click(refresh_gallery, outputs=[full_gallery, gallery_status, disk_usage_md])
 
                 download_zip_fn = build_download_zip_fn(gallery_state)
                 btn_download_zip.click(download_zip_fn, outputs=[zip_file_output])

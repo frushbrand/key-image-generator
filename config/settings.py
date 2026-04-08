@@ -41,12 +41,12 @@ KLING_MODELS = {
     "Kling v3": {
         "api_name": "kling-v3",
         "description": "Kling v3 (범용, 빠름)",
-        "mode": "standard",
+        "mode": "std",
     },
     "Kling 3 Omni": {
         "api_name": "kling-v3-omni",
         "description": "Kling v3 Omni (최고 품질, 네이티브 오디오)",
-        "mode": "professional",
+        "mode": "pro",
     },
 }
 
