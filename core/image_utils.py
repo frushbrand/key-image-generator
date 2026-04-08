@@ -191,6 +191,47 @@ def load_existing_outputs() -> list[dict]:
     return items
 
 
+def load_existing_video_outputs() -> list[dict]:
+    """
+    outputs/ 디렉토리에 저장된 영상 파일을 스캔하여 메타데이터와 함께 반환합니다.
+    최신순(날짜 역순, 파일명 역순)으로 정렬하여 반환합니다.
+    반환값: 각 항목은 {"path": str, "label": str, "timestamp": str,
+                        "model": str, "prompt": str, "date": str} 딕셔너리
+    """
+    items: list[dict] = []
+    out_base = Path(OUTPUT_BASE_DIR)
+    if not out_base.exists():
+        return items
+
+    for date_dir in sorted(out_base.iterdir(), reverse=True):
+        if not date_dir.is_dir():
+            continue
+        for video_path in sorted(date_dir.glob("*.mp4"), reverse=True):
+            meta_path = video_path.with_suffix(".json")
+            try:
+                meta: dict = {}
+                if meta_path.exists():
+                    meta = load_metadata(str(meta_path))
+                model = meta.get("model", "알 수 없음")
+                prompt = meta.get("prompt", "")
+                short_prompt = prompt[:40] + ("..." if len(prompt) > 40 else "")
+                label = f"{date_dir.name} | {model} | {short_prompt}"
+                items.append(
+                    {
+                        "path": str(video_path),
+                        "label": label,
+                        "timestamp": meta.get("timestamp", ""),
+                        "model": model,
+                        "prompt": prompt,
+                        "date": date_dir.name,
+                    }
+                )
+            except Exception:
+                continue
+
+    return items
+
+
 def get_disk_usage_text() -> str:
     """루트 파티션의 전체·사용·여유 디스크 용량 문자열을 반환합니다."""
     import shutil
