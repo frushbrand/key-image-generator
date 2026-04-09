@@ -106,6 +106,19 @@ APP_CSS = """
             visibility: visible !important;
             pointer-events: auto !important;
         }
+
+        /* 내부 상태/다운로드 위젯: DOM에 존재하되 시각적으로 숨김
+           Gradio 5는 visible=False 시 DOM에서 완전히 제거(Svelte 조건부 렌더링)하므로
+           JS에서 접근해야 하는 컴포넌트는 visible=True + CSS hidden 방식 사용 */
+        #ms-state-gen, #ms-state-gallery,
+        #ms-toggle-gen, #ms-toggle-gallery,
+        #single-png-gen, #selected-zip-gen,
+        #single-png-gallery, #full-zip-gallery, #selected-zip-gallery,
+        #selected-videos-zip, #all-videos-zip,
+        #overlay-dl-gen, #overlay-vid-gen, #overlay-ref-gen,
+        #overlay-dl-gallery, #overlay-vid-gallery, #overlay-ref-gallery {
+            display: none !important;
+        }
         """
 
 
@@ -1097,10 +1110,9 @@ def build_ui() -> gr.Blocks:
                         variant="secondary",
                         scale=1,
                     )
-                single_png_output_gen = gr.File(label="PNG 다운로드", visible=False, elem_id="single-png-gen")
+                single_png_output_gen = gr.File(label="PNG 다운로드", elem_id="single-png-gen")
                 ms_state_gen = gr.Textbox(
                     value="[]",
-                    visible=False,
                     elem_id="ms-state-gen",
                     interactive=True,
                 )
@@ -1109,14 +1121,13 @@ def build_ui() -> gr.Blocks:
                     variant="secondary",
                     size="sm",
                     elem_id="ms-toggle-gen",
-                    visible=False,
                 )
-                selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", visible=False, elem_id="selected-zip-gen")
+                selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gen")
 
                 # 오버레이 액션 트리거 (overlay 버튼 → 서버 핸들러 직접 연결용)
-                overlay_dl_gen = gr.Textbox(visible=False, elem_id="overlay-dl-gen", interactive=True)
-                overlay_vid_gen = gr.Textbox(visible=False, elem_id="overlay-vid-gen", interactive=True)
-                overlay_ref_gen = gr.Textbox(visible=False, elem_id="overlay-ref-gen", interactive=True)
+                overlay_dl_gen = gr.Textbox(elem_id="overlay-dl-gen", interactive=True)
+                overlay_vid_gen = gr.Textbox(elem_id="overlay-vid-gen", interactive=True)
+                overlay_ref_gen = gr.Textbox(elem_id="overlay-ref-gen", interactive=True)
 
                 # 상세보기 레퍼런스 이미지 패널
                 with gr.Group(visible=False) as detail_panel_gen:
@@ -1459,8 +1470,8 @@ def build_ui() -> gr.Blocks:
                     height=480,
                     visible=bool(_vid_choices),
                 )
-                selected_videos_zip_output = gr.File(label="선택 영상 ZIP 다운로드", visible=False, elem_id="selected-videos-zip")
-                all_videos_zip_output = gr.File(label="전체 영상 ZIP 다운로드", visible=False, elem_id="all-videos-zip")
+                selected_videos_zip_output = gr.File(label="선택 영상 ZIP 다운로드", elem_id="selected-videos-zip")
+                all_videos_zip_output = gr.File(label="전체 영상 ZIP 다운로드", elem_id="all-videos-zip")
 
                 def _on_kling_model_change(model_label: str):
                     """Omni 모델(supports_video_reference=True)에서만 영상 레퍼런스 탭 표시"""
@@ -1618,11 +1629,10 @@ def build_ui() -> gr.Blocks:
                         scale=1,
                     )
 
-                single_png_output_gallery = gr.File(label="PNG 다운로드", visible=False, elem_id="single-png-gallery")
-                zip_file_output = gr.File(label="ZIP 다운로드", visible=False, elem_id="full-zip-gallery")
+                single_png_output_gallery = gr.File(label="PNG 다운로드", elem_id="single-png-gallery")
+                zip_file_output = gr.File(label="ZIP 다운로드", elem_id="full-zip-gallery")
                 ms_state_gallery = gr.Textbox(
                     value="[]",
-                    visible=False,
                     elem_id="ms-state-gallery",
                     interactive=True,
                 )
@@ -1631,14 +1641,13 @@ def build_ui() -> gr.Blocks:
                     variant="secondary",
                     size="sm",
                     elem_id="ms-toggle-gallery",
-                    visible=False,
                 )
-                selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", visible=False, elem_id="selected-zip-gallery")
+                selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gallery")
 
                 # 오버레이 액션 트리거 (갤러리 탭)
-                overlay_dl_gallery = gr.Textbox(visible=False, elem_id="overlay-dl-gallery", interactive=True)
-                overlay_vid_gallery = gr.Textbox(visible=False, elem_id="overlay-vid-gallery", interactive=True)
-                overlay_ref_gallery = gr.Textbox(visible=False, elem_id="overlay-ref-gallery", interactive=True)
+                overlay_dl_gallery = gr.Textbox(elem_id="overlay-dl-gallery", interactive=True)
+                overlay_vid_gallery = gr.Textbox(elem_id="overlay-vid-gallery", interactive=True)
+                overlay_ref_gallery = gr.Textbox(elem_id="overlay-ref-gallery", interactive=True)
 
                 # 상세보기 레퍼런스 이미지 패널 (갤러리 탭)
                 with gr.Group(visible=False) as detail_panel_gallery:
