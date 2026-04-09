@@ -170,6 +170,9 @@ APP_CSS = """
 # 레퍼런스 이미지 미리보기 썸네일 크기 (픽셀)
 _REF_THUMBNAIL_SIZE = 256
 
+# 이미지 생성 큐 결과 대기 타임아웃 (초)
+_GENERATE_TIMEOUT_SECONDS = 600
+
 # ── 경로 안전 검사 ──────────────────────────────────────────────────────────
 
 def _is_safe_output_path(path: str) -> bool:
@@ -465,7 +468,7 @@ def build_generate_fn(gallery_state: GalleryState):
 
         while finished < count:
             try:
-                result = result_queue.get(timeout=600)  # 10분 타임아웃
+                result = result_queue.get(timeout=_GENERATE_TIMEOUT_SECONDS)
             except _queue.Empty:
                 break
 

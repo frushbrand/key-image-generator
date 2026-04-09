@@ -17,6 +17,11 @@ from config.settings import OUTPUT_BASE_DIR, ASPECT_RATIOS, QUALITY_OPTIONS
 # 갤러리 표시용 썸네일 최대 크기 (픽셀)
 THUMBNAIL_SIZE = 512
 
+# 플레이스홀더 이미지 크기 및 색상 (생성 대기 중 슬롯 표시용)
+_PLACEHOLDER_SIZE = 512
+_PLACEHOLDER_BG_COLOR = (22, 22, 38)
+_PLACEHOLDER_TEXT_COLOR = (120, 120, 200)
+
 # 생성 대기 중 슬롯에 표시할 플레이스홀더 이미지 경로
 PLACEHOLDER_IMAGE_PATH = str(Path(OUTPUT_BASE_DIR) / "_placeholder.png")
 
@@ -28,10 +33,10 @@ def ensure_placeholder_image() -> str:
     if not os.path.exists(path):
         Path(OUTPUT_BASE_DIR).mkdir(parents=True, exist_ok=True)
         from PIL import ImageDraw
-        img = Image.new("RGB", (512, 512), color=(22, 22, 38))
+        img = Image.new("RGB", (_PLACEHOLDER_SIZE, _PLACEHOLDER_SIZE), color=_PLACEHOLDER_BG_COLOR)
         draw = ImageDraw.Draw(img)
         # 가운데에 연한 텍스트 (기본 폰트 사용)
-        draw.text((180, 230), "Generating...", fill=(120, 120, 200))
+        draw.text((180, 230), "Generating...", fill=_PLACEHOLDER_TEXT_COLOR)
         img.save(path, format="PNG")
     return path
 
@@ -46,9 +51,14 @@ def get_thumbnail_path(image_path: str) -> str:
 
 def create_thumbnail(image_path: str) -> str:
     """원본 이미지를 512px 썸네일로 변환하여 thumbs/ 폴더에 저장하고 경로를 반환합니다."""
+    # 경로가 출력 디렉토리 내에 있는지 확인 (경로 주입 방지)
+    output_base = Path(OUTPUT_BASE_DIR).resolve()
+    resolved = Path(image_path).resolve()
+    if not str(resolved).startswith(str(output_base) + os.sep):
+        raise ValueError(f"이미지 경로가 출력 디렉토리 밖에 있습니다: {image_path}")
     thumb_path = get_thumbnail_path(image_path)
     Path(thumb_path).parent.mkdir(parents=True, exist_ok=True)
-    with Image.open(image_path) as img:
+    with Image.open(resolved) as img:
         img = img.convert("RGB")
         img.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE), Image.LANCZOS)
         img.save(thumb_path, format="PNG")

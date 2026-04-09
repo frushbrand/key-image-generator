@@ -11,6 +11,9 @@ from PIL import Image
 
 from core.image_utils import PLACEHOLDER_IMAGE_PATH
 
+# 갤러리에 표시되는 항목 상태 집합 (대기 중 + 성공)
+_VISIBLE_STATUSES = frozenset(("success", "pending"))
+
 
 @dataclass
 class GalleryItem:
@@ -90,7 +93,7 @@ class GalleryState:
         """
         with self._lock:
             visible = [
-                i for i in reversed(self._items) if i.status in ("success", "pending")
+                i for i in reversed(self._items) if i.status in _VISIBLE_STATUSES
             ]
             to_remove = set()
             removed_paths: list[str] = []
@@ -129,7 +132,7 @@ class GalleryState:
         """
         with self._lock:
             visible = [
-                i for i in reversed(self._items) if i.status in ("success", "pending")
+                i for i in reversed(self._items) if i.status in _VISIBLE_STATUSES
             ]
             if 0 <= visual_idx < len(visible):
                 item = visible[visual_idx]
