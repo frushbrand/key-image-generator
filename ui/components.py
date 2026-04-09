@@ -52,6 +52,63 @@ from core.image_utils import (
 from ui.gallery import GalleryState, GalleryItem
 
 
+# ── 앱 테마 및 CSS (Gradio 6.0+: launch()에 전달) ───────────────────────────
+
+APP_THEME = gr.themes.Soft()
+
+APP_CSS = """
+        .title-text { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.2rem; }
+        .subtitle-text { color: #666; margin-bottom: 1rem; }
+        .generate-btn { background: #4f46e5 !important; color: white !important; font-size: 1.1rem !important; }
+
+        /* 갤러리 라이트박스/이미지 뷰어 버튼 크기 확대 */
+        .lightbox button,
+        .lightbox .icon-button,
+        [data-testid="lightbox"] button,
+        .gallery-container .icon-button {
+            width: 48px !important;
+            height: 48px !important;
+            font-size: 1.4rem !important;
+            min-width: 48px !important;
+        }
+        .lightbox svg,
+        [data-testid="lightbox"] svg,
+        .gallery-container button svg {
+            width: 28px !important;
+            height: 28px !important;
+        }
+
+        /* 호버 플로팅 오버레이 버튼 hover 효과 */
+        #gha-ov button:hover {
+            background: rgba(40,40,40,0.92) !important;
+            transform: scale(1.08);
+        }
+
+        /* 공유(Share) 버튼 완전 숨김 */
+        button[aria-label="Share"],
+        button[title="Share"],
+        [data-testid="share-button"],
+        .share-button,
+        .lightbox button[aria-label="Share"],
+        [data-testid="lightbox"] button[aria-label="Share"] {
+            display: none !important;
+        }
+
+        /* 레퍼런스 이미지 파일 업로드 헤더 아이콘 버튼 숨김 (업로드 추가·전체 삭제) */
+        #ref-upload-main .icon-button-wrapper,
+        #ref-upload-add .icon-button-wrapper {
+            display: none !important;
+        }
+
+        /* 파일 행 내 개별 삭제(×) 버튼은 표시 유지 */
+        .label-clear-button {
+            opacity: 1 !important;
+            visibility: visible !important;
+            pointer-events: auto !important;
+        }
+        """
+
+
 # ── 경로 안전 검사 ──────────────────────────────────────────────────────────
 
 def _is_safe_output_path(path: str) -> bool:
@@ -830,58 +887,6 @@ def build_ui() -> gr.Blocks:
 
     with gr.Blocks(
         title="🎨 키 이미지 생성 툴",
-        theme=gr.themes.Soft(),
-        css="""
-        .title-text { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.2rem; }
-        .subtitle-text { color: #666; margin-bottom: 1rem; }
-        .generate-btn { background: #4f46e5 !important; color: white !important; font-size: 1.1rem !important; }
-
-        /* 갤러리 라이트박스/이미지 뷰어 버튼 크기 확대 */
-        .lightbox button,
-        .lightbox .icon-button,
-        [data-testid="lightbox"] button,
-        .gallery-container .icon-button {
-            width: 48px !important;
-            height: 48px !important;
-            font-size: 1.4rem !important;
-            min-width: 48px !important;
-        }
-        .lightbox svg,
-        [data-testid="lightbox"] svg,
-        .gallery-container button svg {
-            width: 28px !important;
-            height: 28px !important;
-        }
-
-        /* 호버 플로팅 오버레이 버튼 hover 효과 */
-        #gha-ov button:hover {
-            background: rgba(40,40,40,0.92) !important;
-            transform: scale(1.08);
-        }
-
-        /* 공유(Share) 버튼 완전 숨김 */
-        button[aria-label="Share"],
-        button[title="Share"],
-        [data-testid="share-button"],
-        .share-button,
-        .lightbox button[aria-label="Share"],
-        [data-testid="lightbox"] button[aria-label="Share"] {
-            display: none !important;
-        }
-
-        /* 레퍼런스 이미지 파일 업로드 헤더 아이콘 버튼 숨김 (업로드 추가·전체 삭제) */
-        #ref-upload-main .icon-button-wrapper,
-        #ref-upload-add .icon-button-wrapper {
-            display: none !important;
-        }
-
-        /* 파일 행 내 개별 삭제(×) 버튼은 표시 유지 */
-        .label-clear-button {
-            opacity: 1 !important;
-            visibility: visible !important;
-            pointer-events: auto !important;
-        }
-        """,
     ) as demo:
 
         gr.HTML(

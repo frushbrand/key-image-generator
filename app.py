@@ -17,7 +17,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent))
 
 try:
-    from ui.components import build_ui
+    from ui.components import build_ui, APP_THEME, APP_CSS
 except (ImportError, ModuleNotFoundError) as e:
     print(
         "\n❌ 필수 패키지가 설치되어 있지 않습니다.\n"
@@ -38,6 +38,8 @@ def main():
         server_port=7860,
         share=False,
         inbrowser=not in_codespaces,
+        theme=APP_THEME,
+        css=APP_CSS,
     )
 
 
