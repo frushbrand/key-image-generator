@@ -40,6 +40,7 @@ def main():
         inbrowser=not in_codespaces,
         theme=APP_THEME,
         css=APP_CSS,
+        allowed_paths=[str(Path(__file__).parent / "outputs")],
     )
 
 
