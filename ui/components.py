@@ -68,6 +68,16 @@ APP_CSS = """
         .subtitle-text { color: #666; margin-bottom: 1rem; }
         .generate-btn { background: #4f46e5 !important; color: white !important; font-size: 1.1rem !important; }
 
+        /* 이미지 생성 버튼: 큐 작업 중에도 항상 활성 상태로 보이도록 */
+        #image-generate-btn button:disabled,
+        #image-generate-btn button[disabled] {
+            opacity: 1 !important;
+            cursor: pointer !important;
+            background: #4f46e5 !important;
+            color: white !important;
+            filter: none !important;
+        }
+
         /* 라이트박스: 닫기(X) 버튼만 표시, 나머지 모두 숨김 */
         .lightbox button,
         [data-testid="lightbox"] button {
@@ -1121,36 +1131,51 @@ def build_ui() -> gr.Blocks:
         }, true);
     })();
 
-    // ── 이미지 생성 버튼 항상 활성 유지 (큐 연속 추가 허용) ─────────────────
-    // Gradio 5 Svelte가 내부 pending 상태로 disabled를 반복 설정하므로
-    // MutationObserver(즉시 감지) + setInterval(재렌더 대비 폴백) 병행 사용
+    // ── 이미지 생성 버튼 항상 클릭 가능 유지 (큐 연속 추가 허용) ──────────────
+    // 3중 방어:
+    //   ① 100ms 폴링: Svelte 재렌더 후 disabled 즉시 제거
+    //   ② MutationObserver (동기): disabled 설정 즉시(rAF 없이) 제거
+    //   ③ 캡처 클릭 인터셉터: 사용자가 disabled 상태인 버튼을 클릭해도
+    //      wrapper 레벨에서 잡아 disabled 제거 후 클릭을 다시 발행
     (function() {
-        function keepBtnEnabled(id) {
-            function forceEnable() {
+        function keepBtnClickable(id) {
+            function getBtn() {
                 var w = document.getElementById(id);
-                var b = w ? (w.tagName === 'BUTTON' ? w : w.querySelector('button')) : null;
-                if (b && b.disabled) {
-                    b.disabled = false;
-                    b.removeAttribute('disabled');
-                }
+                return w ? (w.tagName === 'BUTTON' ? w : w.querySelector('button')) : null;
             }
-            // 200ms 폴링 (Svelte 재렌더 후에도 적용)
-            setInterval(forceEnable, 200);
-            // MutationObserver: disabled 속성 추가 즉시 requestAnimationFrame으로 제거
-            var obs = new MutationObserver(function() {
-                requestAnimationFrame(forceEnable);
-            });
-            var attempts = 0;
-            (function tryObs() {
+            function forceEnable() {
+                var b = getBtn();
+                if (b && b.disabled) { b.disabled = false; b.removeAttribute('disabled'); }
+            }
+
+            // ① 100ms 폴링 (Svelte 재렌더 후 신규 요소에도 적용)
+            setInterval(forceEnable, 100);
+
+            // ② MutationObserver: 동기적으로 disabled 설정 즉시 제거 (rAF 없이)
+            (function setupObs() {
                 var w = document.getElementById(id);
-                if (w) {
-                    obs.observe(w, {attributes: true, attributeFilter: ['disabled'], subtree: true, childList: true});
-                } else if (++attempts < 40) {
-                    setTimeout(tryObs, 300);
-                }
+                if (!w) { setTimeout(setupObs, 300); return; }
+                new MutationObserver(forceEnable)
+                    .observe(w, {attributes: true, subtree: true, childList: true});
+            })();
+
+            // ③ 캡처 클릭 인터셉터: disabled 버튼 클릭 시 wrapper까지 이벤트가 오면
+            //    disabled를 제거하고 버튼에 클릭을 재발행
+            (function setupClickIntercept() {
+                var w = document.getElementById(id);
+                if (!w) { setTimeout(setupClickIntercept, 300); return; }
+                w.addEventListener('click', function(e) {
+                    var b = getBtn();
+                    if (b && b.disabled) {
+                        e.stopImmediatePropagation();
+                        b.removeAttribute('disabled');
+                        b.disabled = false;
+                        b.click();
+                    }
+                }, true); // capture phase
             })();
         }
-        keepBtnEnabled('image-generate-btn');
+        keepBtnClickable('image-generate-btn');
     })();
 
     // ── 라이트박스: 이미지 외부 영역 클릭 시 자동 닫기 ──────────────────────
