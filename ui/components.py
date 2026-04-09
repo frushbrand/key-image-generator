@@ -138,6 +138,10 @@ APP_CSS = """
         """
 
 
+# 진행률 상한: 완료 수 기반 진행률은 최대 이 값까지만 반영
+# (시간 기반 진행률과 병행 시 100%를 절대 미리 표시하지 않도록 여유를 둠)
+_MAX_COUNT_PROGRESS = 0.98
+
 # ── 경로 안전 검사 ──────────────────────────────────────────────────────────
 
 def _is_safe_output_path(path: str) -> bool:
@@ -258,7 +262,6 @@ def build_unified_video_fn(gallery_state: GalleryState):
 
         progress(0.05, desc="영상 생성 작업 요청 중...")
         endpoint = "image2video"
-        poll_start = [0.0]  # 폴링 시작 시각 (task 생성 후)
 
         try:
             if mode == "start_end":
@@ -321,7 +324,7 @@ def build_unified_video_fn(gallery_state: GalleryState):
 
         progress(0.15, desc=f"대기 중... (task_id: {task_id[:8]}…)")
         import time as _time
-        poll_start[0] = _time.time()
+        poll_start_time = _time.time()
         avg_video = get_avg_video_time(model_label)
 
         def on_poll(elapsed, status):
@@ -337,7 +340,7 @@ def build_unified_video_fn(gallery_state: GalleryState):
                 progress_callback=on_poll,
             )
             # 폴링 완료 후 실제 소요 시간 기록
-            record_video_generation(model_label, _time.time() - poll_start[0])
+            record_video_generation(model_label, _time.time() - poll_start_time)
         except TimeoutError as e:
             return None, f"⏱️ {e}"
         except Exception as e:
@@ -407,8 +410,8 @@ def build_generate_fn(gallery_state: GalleryState):
             elapsed = _time.time() - start_time
             # 시간 기반 진행률: 평균 시간 대비 경과 시간 (최대 0.99)
             time_frac = min(elapsed / expected_total, 0.99)
-            # 완료 수 기반 진행률 (최대 0.98로 제한하여 시간 기반과 자연스럽게 병행)
-            count_frac = (completed[0] / count) * 0.98
+            # 완료 수 기반 진행률 (시간 초과 시에도 100%를 미리 표시하지 않도록 상한 적용)
+            count_frac = (completed[0] / count) * _MAX_COUNT_PROGRESS
             frac = max(time_frac, count_frac)
             progress(
                 frac,

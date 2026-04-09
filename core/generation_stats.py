@@ -45,7 +45,7 @@ def record_image_generation(model_name: str, elapsed_seconds: float) -> None:
         data = _load()
         models = data.setdefault("image_models", {})
         entry = models.get(model_name)
-        if entry is None or entry.get("count", 0) == 0:
+        if entry is None:
             models[model_name] = {"count": 1, "avg_seconds": elapsed_seconds}
         else:
             old_avg = entry["avg_seconds"]
@@ -62,7 +62,7 @@ def record_video_generation(model_name: str, elapsed_seconds: float) -> None:
         data = _load()
         models = data.setdefault("video_models", {})
         entry = models.get(model_name)
-        if entry is None or entry.get("count", 0) == 0:
+        if entry is None:
             models[model_name] = {"count": 1, "avg_seconds": elapsed_seconds}
         else:
             old_avg = entry["avg_seconds"]
