@@ -31,6 +31,11 @@ from config.settings import (
     KLING_DEFAULT_QUALITY,
 )
 from core.gemini_client import validate_api_key, generate_batch_images
+from core.generation_stats import (
+    get_avg_image_time,
+    get_avg_video_time,
+    record_video_generation,
+)
 from core.kling_client import (
     validate_kling_keys,
     create_text_to_video_task,
@@ -132,6 +137,10 @@ APP_CSS = """
         }
         """
 
+
+# 진행률 상한: 완료 수 기반 진행률은 최대 이 값까지만 반영
+# (시간 기반 진행률과 병행 시 100%를 절대 미리 표시하지 않도록 여유를 둠)
+_MAX_COUNT_PROGRESS = 0.98
 
 # ── 경로 안전 검사 ──────────────────────────────────────────────────────────
 
@@ -314,10 +323,14 @@ def build_unified_video_fn(gallery_state: GalleryState):
             return None, f"❌ 작업 생성 실패: {e}"
 
         progress(0.15, desc=f"대기 중... (task_id: {task_id[:8]}…)")
+        import time as _time
+        poll_start_time = _time.time()
+        avg_video = get_avg_video_time(model_label)
 
         def on_poll(elapsed, status):
-            frac = min(0.15 + elapsed / 300 * 0.80, 0.95)
-            progress(frac, desc=f"처리 중… {elapsed}초 경과 (상태: {status})")
+            # 평균 영상 생성 시간 기준으로 진행률 계산 (최대 0.99)
+            frac = min(0.15 + (elapsed / avg_video) * 0.84, 0.99)
+            progress(frac, desc=f"처리 중… {elapsed}초 경과 / 예상 {int(avg_video)}초 (상태: {status})")
 
         try:
             video_url = poll_task_result(
@@ -326,6 +339,8 @@ def build_unified_video_fn(gallery_state: GalleryState):
                 timeout=300, poll_interval=5,
                 progress_callback=on_poll,
             )
+            # 폴링 완료 후 실제 소요 시간 기록
+            record_video_generation(model_label, _time.time() - poll_start_time)
         except TimeoutError as e:
             return None, f"⏱️ {e}"
         except Exception as e:
@@ -368,8 +383,16 @@ def build_generate_fn(gallery_state: GalleryState):
 
         count = max(1, min(int(count), MAX_COUNT))
         import time as _time
+        import math as _math
         start_time = _time.time()
-        progress(0.02, desc=f"이미지 {count}장 생성 시작... (보통 30~90초 소요)")
+
+        # 모델별 평균 시간을 기준으로 예상 소요 시간 계산
+        # 병렬 워커 수(최대 5)를 고려해 배치 소요 시간 추정
+        avg_per_image = get_avg_image_time(model_name)
+        n_batches = _math.ceil(count / 5)
+        expected_total = avg_per_image * n_batches
+
+        progress(0.02, desc=f"이미지 {count}장 생성 시작... (예상 {int(expected_total)}초 소요)")
 
         # 레퍼런스 이미지 로드
         ref_pil_images: list[Image.Image] = []
@@ -384,10 +407,15 @@ def build_generate_fn(gallery_state: GalleryState):
 
         def on_progress(idx, img, err):
             completed[0] += 1
-            elapsed = int(_time.time() - start_time)
+            elapsed = _time.time() - start_time
+            # 시간 기반 진행률: 평균 시간 대비 경과 시간 (최대 0.99)
+            time_frac = min(elapsed / expected_total, 0.99)
+            # 완료 수 기반 진행률 (시간 초과 시에도 100%를 미리 표시하지 않도록 상한 적용)
+            count_frac = (completed[0] / count) * _MAX_COUNT_PROGRESS
+            frac = max(time_frac, count_frac)
             progress(
-                completed[0] / count,
-                desc=f"생성 중... {completed[0]}/{count}장 완료 | ⏱️ {elapsed}초 경과",
+                frac,
+                desc=f"생성 중... {completed[0]}/{count}장 완료 | ⏱️ {int(elapsed)}초 / 예상 {int(expected_total)}초",
             )
             offset = len(gallery_state.items)
             if img is not None:
