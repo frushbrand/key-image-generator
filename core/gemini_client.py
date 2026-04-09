@@ -18,7 +18,6 @@ from PIL import Image
 from config.settings import (
     MODELS,
     MAX_RETRY,
-    ASPECT_RATIOS,
     QUALITY_OPTIONS,
 )
 
@@ -46,23 +45,16 @@ def validate_api_key(api_key: str) -> tuple[bool, str]:
         return False, f"❌ 오류 발생: {err}"
 
 
-def _build_size_instruction(ratio: str, quality: str) -> str:
-    """비율과 화질 정보를 담은 이미지 크기 지시문을 생성합니다."""
-    ratio_cfg = ASPECT_RATIOS.get(ratio, {})
-    quality_cfg = QUALITY_OPTIONS.get(quality, {})
-    base_w = ratio_cfg.get("width", 1024)
-    base_h = ratio_cfg.get("height", 1024)
-    mult = quality_cfg.get("width_multiplier", 1.0)
-    target_w = int(base_w * mult)
-    target_h = int(base_h * mult)
-    return (
-        f"IMPORTANT: Generate the image with exact aspect ratio {ratio} (width:height), "
-        f"targeting approximately {target_w}x{target_h} pixels. "
-        f"The image MUST have a {ratio} aspect ratio. "
+def _get_image_config(ratio: str, quality: str) -> types.ImageConfig:
+    """비율과 화질로 Gemini API ImageConfig를 생성합니다."""
+    image_size = QUALITY_OPTIONS.get(quality, {}).get("api_image_size", "2K")
+    return types.ImageConfig(
+        aspect_ratio=ratio,
+        image_size=image_size,
     )
 
 
-
+def _pil_to_bytes(image: Image.Image, fmt: str = "PNG") -> bytes:
     buf = io.BytesIO()
     image.save(buf, format=fmt)
     return buf.getvalue()
@@ -92,13 +84,14 @@ def generate_with_nano_banana_2(
             )
         contents.append("\nNow generate the requested image:\n")
 
-    contents.append(_build_size_instruction(ratio, quality) + prompt)
+    contents.append(prompt)
 
     response = client.models.generate_content(
         model=MODELS["나노 바나나 2"]["api_name"],
         contents=contents,
         config=types.GenerateContentConfig(
             response_modalities=["IMAGE", "TEXT"],
+            image_config=_get_image_config(ratio, quality),
         ),
     )
 
@@ -138,13 +131,14 @@ def generate_with_nano_banana_pro(
             )
         contents.append("\nNow generate the requested image:\n")
 
-    contents.append(_build_size_instruction(ratio, quality) + prompt)
+    contents.append(prompt)
 
     response = client.models.generate_content(
         model=MODELS["나노 바나나 프로"]["api_name"],
         contents=contents,
         config=types.GenerateContentConfig(
             response_modalities=["IMAGE", "TEXT"],
+            image_config=_get_image_config(ratio, quality),
         ),
     )
 
@@ -183,13 +177,14 @@ def generate_with_nano_banana(
             )
         contents.append("\nNow generate the requested image:\n")
 
-    contents.append(_build_size_instruction(ratio, quality) + prompt)
+    contents.append(prompt)
 
     response = client.models.generate_content(
         model=MODELS["나노 바나나"]["api_name"],
         contents=contents,
         config=types.GenerateContentConfig(
             response_modalities=["IMAGE", "TEXT"],
+            image_config=_get_image_config(ratio, quality),
         ),
     )
 
