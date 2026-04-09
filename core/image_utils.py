@@ -213,6 +213,7 @@ def load_existing_outputs() -> list[dict]:
                         thumb_path = str(img_path)
                 items.append(
                     {
+                        # image는 None으로 설정: 시작 시 전체 이미지를 메모리에 로드하지 않아 RAM 절약
                         "image": None,
                         "image_path": str(img_path),
                         "thumbnail_path": thumb_path,

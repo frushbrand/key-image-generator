@@ -52,6 +52,7 @@ from core.image_utils import (
     create_zip_from_paths,
     get_thumbnail_path,
     create_thumbnail,
+    THUMBNAIL_SIZE,
     load_existing_outputs,
     load_existing_video_outputs,
     get_disk_usage_text,
@@ -148,6 +149,9 @@ APP_CSS = """
 # 진행률 상한: 완료 수 기반 진행률은 최대 이 값까지만 반영
 # (시간 기반 진행률과 병행 시 100%를 절대 미리 표시하지 않도록 여유를 둠)
 _MAX_COUNT_PROGRESS = 0.98
+
+# 레퍼런스 이미지 미리보기 썸네일 크기 (픽셀)
+_REF_THUMBNAIL_SIZE = 256
 
 # ── 경로 안전 검사 ──────────────────────────────────────────────────────────
 
@@ -430,9 +434,9 @@ def build_generate_fn(gallery_state: GalleryState):
                     img, model_name, ratio, prompt, quality,
                     reference_image_paths=ref_paths,
                 )
-                # 512px 썸네일을 item.image로 저장 (메모리 절약)
+                # THUMBNAIL_SIZE px 썸네일을 item.image로 저장 (메모리 절약)
                 thumb_img = img.copy()
-                thumb_img.thumbnail((512, 512), Image.LANCZOS)
+                thumb_img.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE), Image.LANCZOS)
                 item = GalleryItem(
                     image=thumb_img,
                     image_path=img_path,
@@ -716,6 +720,14 @@ def build_ui() -> gr.Blocks:
             : setTimeout(restoreTab, 500);
     })();
 
+    // ── 공통 유틸리티: 썸네일 URL → 원본 URL 변환 ──────────────────────────
+    function thumbSrcToOriginalSrc(src) {
+        // thumbs/ 서브폴더 경로를 원본 경로로 변환
+        // 예: /gradio_api/file=/path/outputs/2026-04-09/thumbs/file.png
+        //  → /gradio_api/file=/path/outputs/2026-04-09/file.png
+        return src.replace(/\/thumbs\/([^/?]+)(\?|$)/, '/$1$2');
+    }
+
     // ── 갤러리 호버 플로팅 오버레이 ─────────────────────────────────────────
     (function() {
         var CFGS = [
@@ -801,12 +813,6 @@ def build_ui() -> gr.Blocks:
         ov.addEventListener('mouseleave', hideOv);
 
         // 갤러리 img src에서 직접 파일 다운로드 (썸네일 → 원본 경로로 변환 후 다운로드)
-        function thumbSrcToOriginalSrc(src) {
-            // thumbs/ 서브폴더 경로를 원본 경로로 변환
-            // 예: /gradio_api/file=/path/outputs/2026-04-09/thumbs/file.png
-            //  → /gradio_api/file=/path/outputs/2026-04-09/file.png
-            return src.replace(/\/thumbs\/([^/?]+)(\?|$)/, '/$1$2');
-        }
         function downloadFromGallery(gid, idx) {
             var g = document.getElementById(gid); if (!g) return false;
             var items = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
@@ -974,9 +980,6 @@ def build_ui() -> gr.Blocks:
 
     // ── 라이트박스 열릴 때 썸네일 → 원본 이미지로 교체 ──────────────────────
     (function() {
-        function thumbSrcToOriginalSrc(src) {
-            return src.replace(/\/thumbs\/([^/?]+)(\?|$)/, '/$1$2');
-        }
         new MutationObserver(function(mutations) {
             mutations.forEach(function(m) {
                 m.addedNodes.forEach(function(node) {
@@ -1309,8 +1312,8 @@ def build_ui() -> gr.Blocks:
                             if not p:
                                 continue
                             with Image.open(str(p)) as img:
-                                img.draft('RGB', (256, 256))
-                                img.thumbnail((256, 256), Image.LANCZOS)
+                                img.draft('RGB', (_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE))
+                                img.thumbnail((_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE), Image.LANCZOS)
                                 thumbs.append(img.convert("RGB").copy())
                         except Exception:
                             continue
@@ -1362,8 +1365,8 @@ def build_ui() -> gr.Blocks:
                     for p in new_paths:
                         try:
                             with Image.open(str(p)) as img:
-                                img.draft('RGB', (256, 256))
-                                img.thumbnail((256, 256), Image.LANCZOS)
+                                img.draft('RGB', (_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE))
+                                img.thumbnail((_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE), Image.LANCZOS)
                                 thumbs.append(img.convert("RGB").copy())
                         except Exception:
                             continue
@@ -1429,7 +1432,7 @@ def build_ui() -> gr.Blocks:
                         try:
                             if os.path.exists(rp):
                                 img = Image.open(rp).convert("RGB")
-                                img.thumbnail((256, 256), Image.LANCZOS)
+                                img.thumbnail((_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE), Image.LANCZOS)
                                 imgs.append(img)
                         except Exception:
                             continue
