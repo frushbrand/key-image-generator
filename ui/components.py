@@ -1172,6 +1172,16 @@ def build_ui() -> gr.Blocks:
             })();
         });
     })();
+    // ── js 파라미터 공용 헬퍼 함수 ────────────────────────────────────────────
+    window.__getOvIdx = function(idx) {
+        var oi = (typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0) ? window.__ovIdx : idx;
+        window.__ovIdx = -1;
+        return oi;
+    };
+    window.__getSelJson = function(gid, ms) {
+        var sels = window.__msGetSels ? window.__msGetSels(gid) : [];
+        return JSON.stringify(sels.length ? sels : JSON.parse(ms || '[]'));
+    };
     </script>
     """
 
@@ -1562,14 +1572,14 @@ def build_ui() -> gr.Blocks:
                     smart_download_gen_fn,
                     inputs=[ms_state_gen, selected_img_idx_gen],
                     outputs=[single_png_output_gen],
-                    js="(ms, idx) => { var oi = (typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0) ? window.__ovIdx : idx; var sels = window.__msGetSels ? window.__msGetSels('live-gallery') : []; var arr = sels.length ? sels : JSON.parse(ms || '[]'); window.__ovIdx = -1; return [JSON.stringify(arr), oi]; }",
+                    js="(ms, idx) => { var oi = window.__getOvIdx(idx); return [window.__getSelJson('live-gallery', ms), oi]; }",
                 )
 
                 btn_use_as_ref_gen.click(
                     _use_as_ref,
                     inputs=[selected_img_idx_gen, ref_image_upload],
                     outputs=[ref_image_upload],
-                    js="(idx, files) => { var oi = (typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0) ? window.__ovIdx : idx; window.__ovIdx = -1; return [oi, files]; }",
+                    js="(idx, files) => [window.__getOvIdx(idx), files]",
                 )
 
                 delete_gen_fn = build_delete_selected_fn(gallery_state)
@@ -1577,7 +1587,7 @@ def build_ui() -> gr.Blocks:
                     delete_gen_fn,
                     inputs=[ms_state_gen, selected_img_idx_gen],
                     outputs=[live_gallery, gen_status, ms_state_gen, selected_img_idx_gen],
-                    js="(ms, idx) => { var sels = window.__msGetSels ? window.__msGetSels('live-gallery') : []; var arr = sels.length ? sels : JSON.parse(ms || '[]'); return [JSON.stringify(arr), idx]; }",
+                    js="(ms, idx) => [window.__getSelJson('live-gallery', ms), idx]",
                 )
 
                 # 오버레이 액션 핸들러 연결
@@ -1946,14 +1956,14 @@ def build_ui() -> gr.Blocks:
                     smart_download_gallery_fn,
                     inputs=[ms_state_gallery, selected_img_idx_gallery],
                     outputs=[single_png_output_gallery],
-                    js="(ms, idx) => { var oi = (typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0) ? window.__ovIdx : idx; var sels = window.__msGetSels ? window.__msGetSels('full-gallery') : []; var arr = sels.length ? sels : JSON.parse(ms || '[]'); window.__ovIdx = -1; return [JSON.stringify(arr), oi]; }",
+                    js="(ms, idx) => { var oi = window.__getOvIdx(idx); return [window.__getSelJson('full-gallery', ms), oi]; }",
                 )
 
                 btn_use_as_ref_gallery.click(
                     _use_as_ref,
                     inputs=[selected_img_idx_gallery, ref_image_upload],
                     outputs=[ref_image_upload],
-                    js="(idx, files) => { var oi = (typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0) ? window.__ovIdx : idx; window.__ovIdx = -1; return [oi, files]; }",
+                    js="(idx, files) => [window.__getOvIdx(idx), files]",
                 )
 
                 delete_gallery_fn = build_delete_selected_fn(gallery_state)
@@ -1961,7 +1971,7 @@ def build_ui() -> gr.Blocks:
                     delete_gallery_fn,
                     inputs=[ms_state_gallery, selected_img_idx_gallery],
                     outputs=[full_gallery, gallery_status, ms_state_gallery, selected_img_idx_gallery],
-                    js="(ms, idx) => { var sels = window.__msGetSels ? window.__msGetSels('full-gallery') : []; var arr = sels.length ? sels : JSON.parse(ms || '[]'); return [JSON.stringify(arr), idx]; }",
+                    js="(ms, idx) => [window.__getSelJson('full-gallery', ms), idx]",
                 )
 
                 # overlay_dl_gallery / overlay_ref_gallery 은 오버레이 버튼이 직접 주 버튼을 클릭하도록
@@ -1986,14 +1996,14 @@ def build_ui() -> gr.Blocks:
             on_make_video,
             inputs=[selected_img_idx_gen],
             outputs=[ref_image_vid, main_tabs],
-            js="(idx) => { var oi = (typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0) ? window.__ovIdx : idx; window.__ovIdx = -1; return [oi]; }",
+            js="(idx) => [window.__getOvIdx(idx)]",
         )
 
         btn_make_video_gallery.click(
             on_make_video,
             inputs=[selected_img_idx_gallery],
             outputs=[ref_image_vid, main_tabs],
-            js="(idx) => { var oi = (typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0) ? window.__ovIdx : idx; window.__ovIdx = -1; return [oi]; }",
+            js="(idx) => [window.__getOvIdx(idx)]",
         )
 
         # overlay_vid_gen / overlay_vid_gallery 은 오버레이 버튼이 직접 주 버튼을 클릭하도록
