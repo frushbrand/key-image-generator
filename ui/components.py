@@ -92,10 +92,16 @@ APP_CSS = """
         /* 공유(Share) 버튼 완전 숨김 */
         button[aria-label="Share"],
         button[title="Share"],
+        button[aria-label*="share" i],
         [data-testid="share-button"],
         .share-button,
         .lightbox button[aria-label="Share"],
-        [data-testid="lightbox"] button[aria-label="Share"] {
+        [data-testid="lightbox"] button[aria-label="Share"],
+        .image-frame button[aria-label="Share"],
+        .fixed button[aria-label="Share"],
+        [class*="icon-button"][aria-label="Share"],
+        [class*="share"] button,
+        button[class*="share"] {
             display: none !important;
         }
 
@@ -115,16 +121,14 @@ APP_CSS = """
         /* 파일 다운로드 출력 위젯: MutationObserver 감지를 위해 DOM에 존재하되 숨김
            Gradio 5는 visible=False 시 DOM에서 완전히 제거(Svelte 조건부 렌더링)하므로
            JS에서 접근해야 하는 컴포넌트는 visible=True + CSS hidden 방식 사용 */
-        #single-png-gen, #selected-zip-gen,
-        #single-png-gallery, #full-zip-gallery, #selected-zip-gallery,
+        #single-png-gen,
+        #single-png-gallery, #full-zip-gallery,
         #selected-videos-zip, #all-videos-zip {
             display: none !important;
         }
         /* 내부 상태/트리거 텍스트박스: display:none 대신 화면 밖 배치 사용
            display:none 시 Gradio 5 Svelte 이벤트 파이프라인이 synthetic event를
            처리하지 않아 Python 핸들러가 트리거되지 않음 */
-        #ms-state-gen, #ms-state-gallery,
-        #ms-toggle-gen, #ms-toggle-gallery,
         #overlay-dl-gen, #overlay-vid-gen, #overlay-ref-gen,
         #overlay-dl-gallery, #overlay-vid-gallery, #overlay-ref-gallery {
             position: absolute !important;
@@ -474,7 +478,7 @@ def build_generate_fn(gallery_state: GalleryState):
             )
             status_msg += f"\n\n❌ 실패 원인:\n{error_details}"
 
-        return gallery_state.to_gradio_gallery(), status_msg
+        return status_msg
 
     return generate
 
@@ -761,154 +765,6 @@ def build_ui() -> gr.Blocks:
         window.addEventListener('resize', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); });
     })();
 
-    // ── 다중 선택 (호버 시 체크박스 표시, 선택 시 항상 표시) ────────────────
-    (function() {
-        var GIDS = ['live-gallery', 'full-gallery'];
-        var TBIDS = {'live-gallery': 'ms-state-gen', 'full-gallery': 'ms-state-gallery'};
-        var CLEAR_IDS = {'live-gallery': 'ms-toggle-gen', 'full-gallery': 'ms-toggle-gallery'};
-        var sels = {}, containers = {};
-        var hoverGid = null, hoverIdx = -1;
-        GIDS.forEach(function(id) { sels[id] = new Set(); containers[id] = null; });
-
-        // 호버 오버레이 섹션에서 호출: 마우스가 올라간 갤러리/인덱스 알림
-        window.__msUpdateHover = function(gid, idx) {
-            var prevGid = hoverGid, prevIdx = hoverIdx;
-            hoverGid = (idx >= 0) ? gid : null;
-            hoverIdx = idx;
-            if (prevGid) updateBadgeOpacity(prevGid);
-            if (gid) updateBadgeOpacity(gid);
-        };
-
-        function updateBadgeOpacity(gid) {
-            var c = containers[gid]; if (!c) return;
-            var isHoverGid = (hoverGid === gid);
-            for (var i = 0; i < c.children.length; i++) {
-                var badge = c.children[i].querySelector('.ms-badge'); if (!badge) continue;
-                var isSelected = sels[gid].has(i);
-                var isHovered = isHoverGid && (i === hoverIdx);
-                badge.style.opacity = (isSelected || isHovered) ? '1' : '0';
-            }
-        }
-
-        function getItems(gid) {
-            var g = document.getElementById(gid); if (!g) return [];
-            var r = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
-            if (!r.length) r = Array.from(g.querySelectorAll('.thumbnail-item'));
-            if (!r.length) r = Array.from(g.querySelectorAll('[class*="thumbnail-item"]'));
-            return r;
-        }
-        function getContainer(gid) {
-            if (!containers[gid]) {
-                var c = document.createElement('div');
-                // z-index 10001: 호버 플로팅 오버레이(10000) 위에 표시
-                c.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:10001;';
-                document.body.appendChild(c);
-                containers[gid] = c;
-            }
-            return containers[gid];
-        }
-        function syncTextbox(gid) {
-            var wrapper = document.getElementById(TBIDS[gid]); if (!wrapper) return;
-            var inp = wrapper.querySelector('input[type="text"],textarea'); if (!inp) return;
-            setNativeValue(inp, JSON.stringify([...sels[gid]]));
-        }
-        function refreshOverlays(gid) {
-            var c = getContainer(gid), items = getItems(gid), sel = sels[gid];
-            var isHoverGid = (hoverGid === gid);
-            while (c.children.length > items.length) c.removeChild(c.lastChild);
-            while (c.children.length < items.length) {
-                var d = document.createElement('div');
-                d.style.cssText = 'position:fixed;box-sizing:border-box;display:flex;align-items:flex-start;justify-content:flex-start;padding:4px;pointer-events:none;';
-                var badge = document.createElement('div');
-                badge.className = 'ms-badge';
-                badge.style.cssText = [
-                    'width:22px', 'height:22px', 'border-radius:50%',
-                    'display:flex', 'align-items:center', 'justify-content:center',
-                    'font-size:0.85rem', 'font-weight:700',
-                    'box-shadow:0 1px 4px rgba(0,0,0,0.5)', 'user-select:none',
-                    'pointer-events:auto', 'cursor:pointer',
-                    'transition:opacity 0.15s, background 0.15s',
-                    'border:2px solid rgba(255,255,255,0.7)',
-                    'opacity:0'
-                ].join(';');
-                d.appendChild(badge);
-                c.appendChild(d);
-            }
-            items.forEach(function(item, idx) {
-                var r = item.getBoundingClientRect(), d = c.children[idx];
-                d.style.left = r.left + 'px'; d.style.top = r.top + 'px';
-                d.style.width = r.width + 'px'; d.style.height = r.height + 'px';
-                var badge = d.querySelector('.ms-badge');
-                var isSelected = sel.has(idx);
-                var isHovered = isHoverGid && (idx === hoverIdx);
-                badge.style.background = isSelected ? '#4f46e5' : 'rgba(255,255,255,0.85)';
-                badge.style.borderColor = isSelected ? '#4f46e5' : 'rgba(0,0,0,0.35)';
-                badge.style.color = isSelected ? '#fff' : 'transparent';
-                badge.textContent = isSelected ? '✓' : '';
-                badge.style.opacity = (isSelected || isHovered) ? '1' : '0';
-                badge.onclick = null;
-                badge.onclick = (function(i) {
-                    return function(e) {
-                        e.stopPropagation(); e.preventDefault();
-                        if (sel.has(i)) sel.delete(i); else sel.add(i);
-                        refreshOverlays(gid); syncTextbox(gid);
-                    };
-                })(idx);
-            });
-        }
-        // 선택 초기화 버튼 클릭
-        document.addEventListener('click', function(e) {
-            GIDS.forEach(function(gid) {
-                var cid = CLEAR_IDS[gid];
-                if (e.target.closest('#' + cid)) {
-                    sels[gid].clear();
-                    syncTextbox(gid);
-                    refreshOverlays(gid);
-                }
-            });
-        });
-        // 갤러리 변경 감지 → 배지 갱신
-        var obs = new MutationObserver(function() {
-            GIDS.forEach(refreshOverlays);
-        });
-        function attachObs() {
-            GIDS.forEach(function(gid) {
-                var g = document.getElementById(gid);
-                if (g) obs.observe(g, {childList: true, subtree: true});
-            });
-        }
-        window.addEventListener('scroll', function() {
-            GIDS.forEach(refreshOverlays);
-        }, true);
-        window.addEventListener('resize', function() {
-            GIDS.forEach(refreshOverlays);
-        });
-        setTimeout(attachObs, 800);
-        setTimeout(function() { GIDS.forEach(refreshOverlays); }, 1500);
-
-        // 다중 선택 모드: 하나 이상 선택된 상태에서 이미지 클릭 시 추가 선택 (라이트박스 방지)
-        GIDS.forEach(function(gid) {
-            function attachClickIntercept() {
-                var g = document.getElementById(gid);
-                if (!g) { setTimeout(attachClickIntercept, 500); return; }
-                g.addEventListener('click', function(e) {
-                    if (sels[gid].size === 0) return; // 선택 없으면 기본 동작 유지
-                    var items = getItems(gid);
-                    var item = e.target.closest('[data-testid="thumbnail"]')
-                        || e.target.closest('.thumbnail-item')
-                        || e.target.closest('[class*="thumbnail-item"]');
-                    if (!item) return;
-                    var idx = items.indexOf(item);
-                    if (idx < 0) return;
-                    e.preventDefault(); e.stopPropagation();
-                    if (sels[gid].has(idx)) sels[gid].delete(idx); else sels[gid].add(idx);
-                    refreshOverlays(gid); syncTextbox(gid);
-                }, true); // capture phase: Gradio 이벤트보다 먼저 처리
-            }
-            setTimeout(attachClickIntercept, 1000);
-        });
-    })();
-
     // ── Ctrl+Enter 단축키: 이미지/영상 생성 ──────────────────────────────
     (function() {
         function bindCtrlEnter(promptElemId, btnElemId) {
@@ -936,7 +792,7 @@ def build_ui() -> gr.Blocks:
 
     // ── 다운로드 파일 위젯 자동 실행 (별도 창 없이 바로 다운로드) ──────────
     (function() {
-        var DL_IDS = ['single-png-gen', 'selected-zip-gen', 'single-png-gallery', 'selected-zip-gallery', 'full-zip-gallery', 'selected-videos-zip', 'all-videos-zip'];
+        var DL_IDS = ['single-png-gen', 'single-png-gallery', 'full-zip-gallery', 'selected-videos-zip', 'all-videos-zip'];
         DL_IDS.forEach(function(id) {
             var attempts = 0;
             (function trySetup() {
@@ -1104,7 +960,8 @@ def build_ui() -> gr.Blocks:
                         ref_preview = gr.Gallery(
                             label="레퍼런스 미리보기 (썸네일 클릭 시 해당 이미지 삭제 🗑️)",
                             columns=2,
-                            height=420,
+                            height=300,
+                            object_fit="contain",
                             visible=False,
                         )
 
@@ -1174,24 +1031,7 @@ def build_ui() -> gr.Blocks:
                         scale=1,
                         elem_id="btn-ref-gen",
                     )
-                    btn_download_selected_gen = gr.Button(
-                        "📦 선택 항목 ZIP",
-                        variant="secondary",
-                        scale=1,
-                    )
                 single_png_output_gen = gr.File(label="PNG 다운로드", elem_id="single-png-gen")
-                ms_state_gen = gr.Textbox(
-                    value="[]",
-                    elem_id="ms-state-gen",
-                    interactive=True,
-                )
-                btn_multi_select_gen = gr.Button(
-                    "✖️ 선택 초기화",
-                    variant="secondary",
-                    size="sm",
-                    elem_id="ms-toggle-gen",
-                )
-                selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gen")
 
                 # 오버레이 액션 트리거 (overlay 버튼 → 서버 핸들러 직접 연결용)
                 overlay_dl_gen = gr.Textbox(elem_id="overlay-dl-gen", interactive=True)
@@ -1228,7 +1068,8 @@ def build_ui() -> gr.Blocks:
                                 thumbs.append(img.convert("RGB").copy())
                         except Exception:
                             continue
-                    return gr.update(visible=bool(thumbs), value=thumbs)
+                    cols = 1 if len(thumbs) == 1 else 2
+                    return gr.update(visible=bool(thumbs), value=thumbs, columns=cols)
 
                 def on_add_ref_images(new_files, current_files):
                     """추가 업로드된 파일을 기존 레퍼런스 이미지 목록에 병합합니다."""
@@ -1280,7 +1121,8 @@ def build_ui() -> gr.Blocks:
                                 thumbs.append(img.convert("RGB").copy())
                         except Exception:
                             continue
-                    return gr.update(value=new_paths), gr.update(visible=bool(thumbs), value=thumbs)
+                    cols = 1 if len(thumbs) == 1 else 2
+                    return gr.update(value=new_paths), gr.update(visible=bool(thumbs), value=thumbs, columns=cols)
 
                 model_radio.change(update_model_info, inputs=[model_radio], outputs=[model_info])
                 ref_image_upload.change(
@@ -1318,7 +1160,10 @@ def build_ui() -> gr.Blocks:
                         count_slider,
                         ref_image_upload,
                     ],
-                    outputs=[live_gallery, gen_status],
+                    outputs=[gen_status],
+                ).then(
+                    lambda: gallery_state.to_gradio_gallery(),
+                    outputs=[live_gallery],
                 ).then(
                     update_ref_visibility,
                     inputs=[ref_image_upload],
@@ -1326,14 +1171,16 @@ def build_ui() -> gr.Blocks:
                 )
 
                 def _load_ref_detail_images(item):
-                    """GalleryItem에서 레퍼런스 이미지를 고화질로 로드합니다."""
+                    """GalleryItem에서 레퍼런스 이미지를 미리보기 크기로 로드합니다."""
                     if item is None or not item.reference_image_paths:
                         return [], False
                     imgs = []
                     for rp in item.reference_image_paths:
                         try:
                             if os.path.exists(rp):
-                                imgs.append(Image.open(rp).convert("RGB"))
+                                img = Image.open(rp).convert("RGB")
+                                img.thumbnail((256, 256), Image.LANCZOS)
+                                imgs.append(img)
                         except Exception:
                             continue
                     return imgs, bool(imgs)
@@ -1365,13 +1212,6 @@ def build_ui() -> gr.Blocks:
                     _use_as_ref,
                     inputs=[selected_img_idx_gen, ref_image_upload],
                     outputs=[ref_image_upload],
-                )
-
-                download_selected_gen_fn = build_download_selected_fn(gallery_state)
-                btn_download_selected_gen.click(
-                    download_selected_gen_fn,
-                    inputs=[ms_state_gen],
-                    outputs=[selected_zip_output_gen],
                 )
 
                 # 오버레이 액션 핸들러 연결
@@ -1692,26 +1532,9 @@ def build_ui() -> gr.Blocks:
                         scale=1,
                         elem_id="btn-ref-gallery",
                     )
-                    btn_download_selected_gallery = gr.Button(
-                        "📦 선택 항목 ZIP",
-                        variant="secondary",
-                        scale=1,
-                    )
 
                 single_png_output_gallery = gr.File(label="PNG 다운로드", elem_id="single-png-gallery")
                 zip_file_output = gr.File(label="ZIP 다운로드", elem_id="full-zip-gallery")
-                ms_state_gallery = gr.Textbox(
-                    value="[]",
-                    elem_id="ms-state-gallery",
-                    interactive=True,
-                )
-                btn_multi_select_gallery = gr.Button(
-                    "✖️ 선택 초기화",
-                    variant="secondary",
-                    size="sm",
-                    elem_id="ms-toggle-gallery",
-                )
-                selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gallery")
 
                 # 오버레이 액션 트리거 (갤러리 탭)
                 overlay_dl_gallery = gr.Textbox(elem_id="overlay-dl-gallery", interactive=True)
@@ -1766,13 +1589,6 @@ def build_ui() -> gr.Blocks:
                     _use_as_ref,
                     inputs=[selected_img_idx_gallery, ref_image_upload],
                     outputs=[ref_image_upload],
-                )
-
-                download_selected_gallery_fn = build_download_selected_fn(gallery_state)
-                btn_download_selected_gallery.click(
-                    download_selected_gallery_fn,
-                    inputs=[ms_state_gallery],
-                    outputs=[selected_zip_output_gallery],
                 )
 
                 overlay_dl_gallery.input(
