@@ -120,15 +120,37 @@ APP_CSS = """
             pointer-events: auto !important;
         }
 
-        /* 갤러리 캡션(라이트박스 포함) 전체 표시 - 잘림 방지 */
-        [data-testid="caption"],
-        .gallery-item .caption,
-        [class*="caption"] {
+        /* 갤러리 썸네일 캡션: 2줄로 제한 (프롬프트 미리보기) */
+        [data-testid="thumbnail"] [data-testid="caption"],
+        [data-testid="thumbnail"] .caption,
+        .gallery-item [data-testid="caption"],
+        .gallery-item .caption {
+            display: -webkit-box !important;
+            -webkit-line-clamp: 2 !important;
+            -webkit-box-orient: vertical !important;
+            overflow: hidden !important;
+            white-space: normal !important;
+            max-height: 3em !important;
+        }
+
+        /* 라이트박스 캡션: 전체 표시 (프롬프트 전체 확인) */
+        [data-testid="lightbox"] [data-testid="caption"],
+        [data-testid="lightbox"] .caption,
+        [data-testid="lightbox"] [class*="caption"],
+        .fixed [data-testid="caption"] {
             white-space: pre-wrap !important;
             overflow: visible !important;
             text-overflow: unset !important;
             display: block !important;
             max-height: none !important;
+            -webkit-line-clamp: unset !important;
+            background: rgba(0,0,0,0.7) !important;
+            color: #fff !important;
+            padding: 8px 12px !important;
+            border-radius: 6px !important;
+            margin-top: 6px !important;
+            position: relative !important;
+            z-index: 5 !important;
         }
 
         /* 생성 대기 중(pending) 플레이스홀더 이미지: 맥박 애니메이션 */
@@ -140,6 +162,13 @@ APP_CSS = """
         @keyframes gallery-pending-pulse {
             0%, 100% { opacity: 0.35; }
             50%       { opacity: 0.85; }
+        }
+
+        /* 레퍼런스 이미지 상세 패널: 이미지가 잘리지 않도록 */
+        #detail-ref-gen img,
+        #detail-ref-full img {
+            object-fit: contain !important;
+            max-height: 400px !important;
         }
 
         /* 파일 다운로드 출력 위젯: MutationObserver 감지를 위해 DOM에 존재하되 숨김
@@ -780,6 +809,7 @@ def build_ui() -> gr.Blocks:
         document.body.appendChild(ov);
 
         var curItem = null, curCfg = null, curItemIdx = -1;
+        window.__ovIdx = -1;  // 오버레이 호버 인덱스 (버튼 클릭 시 주 버튼에 전달)
 
         function cfgOf(el) {
             for (var i = 0; i < CFGS.length; i++) {
@@ -809,6 +839,7 @@ def build_ui() -> gr.Blocks:
         function hideOv() {
             var prevGid = curCfg ? curCfg.id : null;
             ov.style.display = 'none'; curItem = null; curCfg = null; curItemIdx = -1;
+            window.__ovIdx = -1;
             if (prevGid !== null && window.__msUpdateHover) window.__msUpdateHover(prevGid, -1);
         }
         function gClick(id) {
@@ -873,15 +904,15 @@ def build_ui() -> gr.Blocks:
         ov.addEventListener('mousedown', function(e) {
             var btn = e.target.closest('[data-k]'); if (!btn || !curItem || !curCfg) return;
             e.preventDefault(); e.stopPropagation();
+            // 현재 호버 인덱스를 전역 변수에 저장 — Python 버튼의 js 프리프로세서가 읽음
+            window.__ovIdx = curItemIdx;
             if (btn.dataset.k === 'dl') {
-                // PNG 다운로드: 갤러리 img src에서 직접 다운로드 (원본 PNG 파일 서빙)
-                // gallery가 file path를 사용하므로 img src = 원본 PNG 경로
-                if (!downloadFromGallery(curCfg.id, curItemIdx)) {
-                    // 폴백: Python 핸들러 트리거
-                    triggerOverlayAction(curCfg.id, btn.dataset.k, curItemIdx);
-                }
-            } else {
-                triggerOverlayAction(curCfg.id, btn.dataset.k, curItemIdx);
+                // 다운로드: 주 다운로드 버튼 클릭 → Python이 원본 이미지 경로 반환
+                gClick(curCfg.dl);
+            } else if (btn.dataset.k === 'vid') {
+                gClick(curCfg.vid);
+            } else if (btn.dataset.k === 'ref') {
+                gClick(curCfg.ref);
             }
         });
         window.addEventListener('scroll', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); }, true);
@@ -906,6 +937,11 @@ def build_ui() -> gr.Blocks:
         window.__msGetSels = function(gid) { return sels[gid] ? [...sels[gid]] : []; };
         window.__msClear = function(gid) {
             if (sels[gid]) { sels[gid].clear(); syncTextbox(gid); refreshOverlays(gid); }
+        };
+        window.__msToggle = function(gid, idx) {
+            if (!sels[gid]) return;
+            if (sels[gid].has(idx)) sels[gid].delete(idx); else sels[gid].add(idx);
+            refreshOverlays(gid); syncTextbox(gid);
         };
 
         function updateBadgeOpacity(gid) {
@@ -992,6 +1028,61 @@ def build_ui() -> gr.Blocks:
         window.addEventListener('resize', function() { GIDS.forEach(refreshOverlays); });
         setTimeout(attachObs, 800);
         setTimeout(function() { GIDS.forEach(refreshOverlays); }, 1500);
+    })();
+
+    // ── 다중 선택 모드에서 썸네일 클릭 시 라이트박스 차단 → 체크박스 토글 ────
+    (function() {
+        var CFGS = [
+            {id:'live-gallery'}, {id:'full-gallery'}
+        ];
+        function cfgOf(el) {
+            for (var i = 0; i < CFGS.length; i++) {
+                var g = document.getElementById(CFGS[i].id);
+                if (g && g.contains(el)) return CFGS[i];
+            }
+            return null;
+        }
+        function itemOf(el) {
+            return el.closest('[data-testid="thumbnail"]')
+                || el.closest('.thumbnail-item')
+                || el.closest('[class*="thumbnail-item"]');
+        }
+        function getItems(gid) {
+            var g = document.getElementById(gid); if (!g) return [];
+            var r = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
+            if (!r.length) r = Array.from(g.querySelectorAll('.thumbnail-item'));
+            if (!r.length) r = Array.from(g.querySelectorAll('[class*="thumbnail-item"]'));
+            return r;
+        }
+        document.addEventListener('click', function(e) {
+            var ov = document.getElementById('gha-ov');
+            if (ov && ov.contains(e.target)) return;
+            var cfg = cfgOf(e.target); if (!cfg) return;
+            var gid = cfg.id;
+            var sels = window.__msGetSels ? window.__msGetSels(gid) : [];
+            if (!sels || !sels.length) return;
+            var item = itemOf(e.target); if (!item) return;
+            var items = getItems(gid);
+            var idx = items.indexOf(item); if (idx < 0) return;
+            e.preventDefault(); e.stopImmediatePropagation();
+            if (window.__msToggle) window.__msToggle(gid, idx);
+        }, true);
+    })();
+
+    // ── 이미지 생성 버튼 항상 활성 유지 (큐 연속 추가 허용) ─────────────────
+    (function() {
+        function keepBtnEnabled(id) {
+            var att = 0;
+            (function t() {
+                var w = document.getElementById(id);
+                var b = w ? (w.tagName === 'BUTTON' ? w : w.querySelector('button')) : null;
+                if (!b) { if (++att < 40) setTimeout(t, 300); return; }
+                new MutationObserver(function() {
+                    if (b.disabled) b.removeAttribute('disabled');
+                }).observe(b, {attributes: true, attributeFilter: ['disabled']});
+            })();
+        }
+        keepBtnEnabled('image-generate-btn');
     })();
 
     // ── 라이트박스 열릴 때 썸네일 → 원본 이미지로 교체 ──────────────────────
@@ -1081,6 +1172,16 @@ def build_ui() -> gr.Blocks:
             })();
         });
     })();
+    // ── js 파라미터 공용 헬퍼 함수 ────────────────────────────────────────────
+    window.__getOvIdx = function(idx) {
+        var oi = (typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0) ? window.__ovIdx : idx;
+        window.__ovIdx = -1;
+        return oi;
+    };
+    window.__getSelJson = function(gid, ms) {
+        var sels = window.__msGetSels ? window.__msGetSels(gid) : [];
+        return JSON.stringify(sels.length ? sels : JSON.parse(ms || '[]'));
+    };
     </script>
     """
 
@@ -1308,9 +1409,10 @@ def build_ui() -> gr.Blocks:
                     gr.Markdown("#### 🖼️ 이 이미지 생성에 사용된 레퍼런스")
                     detail_ref_gallery_gen = gr.Gallery(
                         label="레퍼런스 이미지",
-                        columns=4,
-                        height=220,
+                        columns=3,
+                        height=400,
                         object_fit="contain",
+                        elem_id="detail-ref-gen",
                     )
 
 
@@ -1435,7 +1537,7 @@ def build_ui() -> gr.Blocks:
                 )
 
                 def _load_ref_detail_images(item):
-                    """GalleryItem에서 레퍼런스 이미지를 미리보기 크기로 로드합니다."""
+                    """GalleryItem에서 레퍼런스 이미지를 상세 패널용 크기로 로드합니다."""
                     if item is None or not item.reference_image_paths:
                         return [], False
                     imgs = []
@@ -1443,7 +1545,7 @@ def build_ui() -> gr.Blocks:
                         try:
                             if os.path.exists(rp):
                                 img = Image.open(rp).convert("RGB")
-                                img.thumbnail((_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE), Image.LANCZOS)
+                                img.thumbnail((512, 512), Image.LANCZOS)
                                 imgs.append(img)
                         except Exception:
                             continue
@@ -1470,12 +1572,14 @@ def build_ui() -> gr.Blocks:
                     smart_download_gen_fn,
                     inputs=[ms_state_gen, selected_img_idx_gen],
                     outputs=[single_png_output_gen],
+                    js="(ms, idx) => { var oi = window.__getOvIdx(idx); return [window.__getSelJson('live-gallery', ms), oi]; }",
                 )
 
                 btn_use_as_ref_gen.click(
                     _use_as_ref,
                     inputs=[selected_img_idx_gen, ref_image_upload],
                     outputs=[ref_image_upload],
+                    js="(idx, files) => [window.__getOvIdx(idx), files]",
                 )
 
                 delete_gen_fn = build_delete_selected_fn(gallery_state)
@@ -1483,6 +1587,7 @@ def build_ui() -> gr.Blocks:
                     delete_gen_fn,
                     inputs=[ms_state_gen, selected_img_idx_gen],
                     outputs=[live_gallery, gen_status, ms_state_gen, selected_img_idx_gen],
+                    js="(ms, idx) => [window.__getSelJson('live-gallery', ms), idx]",
                 )
 
                 # 오버레이 액션 핸들러 연결
@@ -1493,17 +1598,8 @@ def build_ui() -> gr.Blocks:
                     except Exception:
                         return -1
 
-                download_single_gen_fn = build_download_single_fn(gallery_state)
-                overlay_dl_gen.input(
-                    lambda val: download_single_gen_fn(_parse_overlay_idx(val)),
-                    inputs=[overlay_dl_gen],
-                    outputs=[single_png_output_gen],
-                )
-                overlay_ref_gen.input(
-                    lambda val, files: _use_as_ref(_parse_overlay_idx(val), files),
-                    inputs=[overlay_ref_gen, ref_image_upload],
-                    outputs=[ref_image_upload],
-                )
+                # overlay_dl_gen / overlay_ref_gen 은 오버레이 버튼이 직접 주 버튼을 클릭하도록
+                # 변경되었으므로 별도 .input 핸들러가 필요 없음
 
             # ── 탭 3: 영상 생성 (Kling) ──────────────────────────────────────
             with gr.Tab("🎬 영상 생성 (Kling)", id="tab_video"):
@@ -1822,9 +1918,10 @@ def build_ui() -> gr.Blocks:
                     gr.Markdown("#### 🖼️ 이 이미지 생성에 사용된 레퍼런스")
                     detail_ref_gallery_full = gr.Gallery(
                         label="레퍼런스 이미지",
-                        columns=4,
-                        height=220,
+                        columns=3,
+                        height=400,
                         object_fit="contain",
+                        elem_id="detail-ref-full",
                     )
 
 
@@ -1859,12 +1956,14 @@ def build_ui() -> gr.Blocks:
                     smart_download_gallery_fn,
                     inputs=[ms_state_gallery, selected_img_idx_gallery],
                     outputs=[single_png_output_gallery],
+                    js="(ms, idx) => { var oi = window.__getOvIdx(idx); return [window.__getSelJson('full-gallery', ms), oi]; }",
                 )
 
                 btn_use_as_ref_gallery.click(
                     _use_as_ref,
                     inputs=[selected_img_idx_gallery, ref_image_upload],
                     outputs=[ref_image_upload],
+                    js="(idx, files) => [window.__getOvIdx(idx), files]",
                 )
 
                 delete_gallery_fn = build_delete_selected_fn(gallery_state)
@@ -1872,19 +1971,11 @@ def build_ui() -> gr.Blocks:
                     delete_gallery_fn,
                     inputs=[ms_state_gallery, selected_img_idx_gallery],
                     outputs=[full_gallery, gallery_status, ms_state_gallery, selected_img_idx_gallery],
+                    js="(ms, idx) => [window.__getSelJson('full-gallery', ms), idx]",
                 )
 
-                download_single_gallery_fn = build_download_single_fn(gallery_state)
-                overlay_dl_gallery.input(
-                    lambda val: download_single_gallery_fn(_parse_overlay_idx(val)),
-                    inputs=[overlay_dl_gallery],
-                    outputs=[single_png_output_gallery],
-                )
-                overlay_ref_gallery.input(
-                    lambda val, files: _use_as_ref(_parse_overlay_idx(val), files),
-                    inputs=[overlay_ref_gallery, ref_image_upload],
-                    outputs=[ref_image_upload],
-                )
+                # overlay_dl_gallery / overlay_ref_gallery 은 오버레이 버튼이 직접 주 버튼을 클릭하도록
+                # 변경되었으므로 별도 .input 핸들러가 필요 없음
 
         # ── 탭 간 "영상화" 버튼 공통 핸들러 ─────────────────────────────────
 
@@ -1905,25 +1996,18 @@ def build_ui() -> gr.Blocks:
             on_make_video,
             inputs=[selected_img_idx_gen],
             outputs=[ref_image_vid, main_tabs],
+            js="(idx) => [window.__getOvIdx(idx)]",
         )
 
         btn_make_video_gallery.click(
             on_make_video,
             inputs=[selected_img_idx_gallery],
             outputs=[ref_image_vid, main_tabs],
+            js="(idx) => [window.__getOvIdx(idx)]",
         )
 
-        overlay_vid_gen.input(
-            lambda val: on_make_video(_parse_overlay_idx(val)),
-            inputs=[overlay_vid_gen],
-            outputs=[ref_image_vid, main_tabs],
-        )
-
-        overlay_vid_gallery.input(
-            lambda val: on_make_video(_parse_overlay_idx(val)),
-            inputs=[overlay_vid_gallery],
-            outputs=[ref_image_vid, main_tabs],
-        )
+        # overlay_vid_gen / overlay_vid_gallery 은 오버레이 버튼이 직접 주 버튼을 클릭하도록
+        # 변경되었으므로 별도 .input 핸들러가 필요 없음
 
         gr.Markdown(
             """
