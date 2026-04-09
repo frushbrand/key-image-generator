@@ -1127,7 +1127,7 @@ def build_ui() -> gr.Blocks:
                 var w = document.getElementById(id);
                 var b = w ? (w.tagName === 'BUTTON' ? w : w.querySelector('button')) : null;
                 if (b && b.disabled) b.removeAttribute('disabled');
-            }, 200);
+            }, 500);
         }
         keepBtnEnabled('image-generate-btn');
     })();
