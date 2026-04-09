@@ -681,7 +681,9 @@ def build_ui() -> gr.Blocks:
             var item = items[idx]; if (!item) return false;
             var img = item.querySelector('img');
             if (!img || !img.src || img.src.indexOf('data:') === 0) return false;
-            // Gradio 파일 서빙 URL (예: /gradio_api/file=.../outputs/xxx.png)에서 파일명 추출
+            // Gradio 파일 서빙 URL 형식: /gradio_api/file=<absolute_path>
+            // 예: /gradio_api/file=/home/user/project/outputs/2026-04-09/135000_model_ratio.png
+            // '=' 이후를 잘라 마지막 경로 컴포넌트(파일명)를 추출
             var rawSrc = decodeURIComponent(img.src);
             var filename = rawSrc.split('=').pop().split('/').pop().split('?')[0];
             if (!filename || !filename.match(/\.(png|jpg|jpeg|webp|gif)$/i)) filename = 'image.png';
@@ -693,6 +695,14 @@ def build_ui() -> gr.Blocks:
             document.body.removeChild(a);
             return true;
         }
+        // input/textarea 요소에 값을 설정하고 Gradio/Svelte가 감지할 수 있는 이벤트를 발생시킴
+        function setNativeValue(inp, val) {
+            var proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+            var nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(inp, val); } else { inp.value = val; }
+            inp.dispatchEvent(new InputEvent('input', {bubbles: true, cancelable: true}));
+            inp.dispatchEvent(new Event('change', {bubbles: true}));
+        }
         // 오버레이 버튼 클릭: 라이트박스 열지 않고 서버 액션 직접 트리거
         function triggerOverlayAction(gid, key, idx) {
             var tbMap = {
@@ -703,12 +713,7 @@ def build_ui() -> gr.Blocks:
             var wrapper = document.getElementById(tbId); if (!wrapper) return;
             var inp = wrapper.querySelector('input[type="text"],textarea'); if (!inp) return;
             // idx:timestamp 형식으로 설정하여 같은 인덱스 반복 클릭도 이벤트 발생
-            var val = idx + ':' + Date.now();
-            var proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-            var nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value');
-            if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(inp, val); } else { inp.value = val; }
-            inp.dispatchEvent(new InputEvent('input', {bubbles: true, cancelable: true}));
-            inp.dispatchEvent(new Event('change', {bubbles: true}));
+            setNativeValue(inp, idx + ':' + Date.now());
         }
         ov.addEventListener('mousedown', function(e) {
             var btn = e.target.closest('[data-k]'); if (!btn || !curItem || !curCfg) return;
@@ -777,12 +782,7 @@ def build_ui() -> gr.Blocks:
         function syncTextbox(gid) {
             var wrapper = document.getElementById(TBIDS[gid]); if (!wrapper) return;
             var inp = wrapper.querySelector('input[type="text"],textarea'); if (!inp) return;
-            var val = JSON.stringify([...sels[gid]]);
-            var proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-            var nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value');
-            if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(inp, val); } else { inp.value = val; }
-            inp.dispatchEvent(new InputEvent('input', {bubbles: true, cancelable: true}));
-            inp.dispatchEvent(new Event('change', {bubbles: true}));
+            setNativeValue(inp, JSON.stringify([...sels[gid]]));
         }
         function refreshOverlays(gid) {
             var c = getContainer(gid), items = getItems(gid), sel = sels[gid];
