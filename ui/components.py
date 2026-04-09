@@ -68,19 +68,31 @@ APP_CSS = """
         .subtitle-text { color: #666; margin-bottom: 1rem; }
         .generate-btn { background: #4f46e5 !important; color: white !important; font-size: 1.1rem !important; }
 
-        /* 갤러리 라이트박스/이미지 뷰어 버튼 크기 확대 */
+        /* 이미지 생성 버튼: 큐 작업 중에도 항상 활성 상태로 보이도록 */
+        #image-generate-btn button:disabled,
+        #image-generate-btn button[disabled] {
+            opacity: 1 !important;
+            cursor: pointer !important;
+            background: #4f46e5 !important;
+            color: white !important;
+            filter: none !important;
+        }
+
+        /* 라이트박스: 닫기(X) 버튼만 표시, 나머지 모두 숨김 */
         .lightbox button,
-        .lightbox .icon-button,
-        [data-testid="lightbox"] button,
-        .gallery-container .icon-button {
+        [data-testid="lightbox"] button {
+            display: none !important;
+        }
+        .lightbox button:last-child,
+        [data-testid="lightbox"] button:last-child {
+            display: flex !important;
             width: 48px !important;
             height: 48px !important;
             font-size: 1.4rem !important;
             min-width: 48px !important;
         }
-        .lightbox svg,
-        [data-testid="lightbox"] svg,
-        .gallery-container button svg {
+        .lightbox button:last-child svg,
+        [data-testid="lightbox"] button:last-child svg {
             width: 28px !important;
             height: 28px !important;
         }
@@ -946,12 +958,13 @@ def build_ui() -> gr.Blocks:
             if (btn.dataset.k === 'dl') {
                 // 오버레이 다운로드: 해당 이미지의 원본 PNG 직접 다운로드 (Python 불필요)
                 downloadFromGallery(curCfg.id, curItemIdx);
+                window.__ovIdx = -1;
             } else if (btn.dataset.k === 'vid') {
-                // 오버레이 영상화: overlay textbox를 통해 Python 핸들러 호출 (개별 이미지 기준)
-                triggerOverlayAction(curCfg.id, 'vid', curItemIdx);
+                // 오버레이 영상화: 신뢰 이벤트(click)를 통해 전역 버튼 트리거 (isTrusted 보장)
+                gClick(curCfg.vid);
             } else if (btn.dataset.k === 'ref') {
-                // 오버레이 레퍼런스: overlay textbox를 통해 Python 핸들러 호출 (개별 이미지 기준)
-                triggerOverlayAction(curCfg.id, 'ref', curItemIdx);
+                // 오버레이 레퍼런스: 신뢰 이벤트(click)를 통해 전역 버튼 트리거 (isTrusted 보장)
+                gClick(curCfg.ref);
             }
         });
         window.addEventListener('scroll', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); }, true);
@@ -1118,18 +1131,70 @@ def build_ui() -> gr.Blocks:
         }, true);
     })();
 
-    // ── 이미지 생성 버튼 항상 활성 유지 (큐 연속 추가 허용) ─────────────────
-    // Gradio 5가 버튼을 Svelte로 재렌더링하면 MutationObserver가 새 요소를 놓칠 수 있으므로
-    // setInterval로 주기적으로 disabled 속성을 제거하는 방식으로 교체
+    // ── 이미지 생성 버튼 항상 클릭 가능 유지 (큐 연속 추가 허용) ──────────────
+    // 3중 방어:
+    //   ① 100ms 폴링: Svelte 재렌더 후 disabled 즉시 제거
+    //   ② MutationObserver (동기): disabled 설정 즉시(rAF 없이) 제거
+    //   ③ 캡처 클릭 인터셉터: 사용자가 disabled 상태인 버튼을 클릭해도
+    //      wrapper 레벨에서 잡아 disabled 제거 후 클릭을 다시 발행
     (function() {
-        function keepBtnEnabled(id) {
-            setInterval(function() {
+        function keepBtnClickable(id) {
+            function getBtn() {
                 var w = document.getElementById(id);
-                var b = w ? (w.tagName === 'BUTTON' ? w : w.querySelector('button')) : null;
-                if (b && b.disabled) b.removeAttribute('disabled');
-            }, 500);
+                return w ? (w.tagName === 'BUTTON' ? w : w.querySelector('button')) : null;
+            }
+            function forceEnable() {
+                var b = getBtn();
+                if (b && b.disabled) { b.disabled = false; b.removeAttribute('disabled'); }
+            }
+
+            // ① 100ms 폴링 (Svelte 재렌더 후 신규 요소에도 적용)
+            setInterval(forceEnable, 100);
+
+            // ② MutationObserver: 동기적으로 disabled 설정 즉시 제거 (rAF 없이)
+            (function setupObs() {
+                var w = document.getElementById(id);
+                if (!w) { setTimeout(setupObs, 300); return; }
+                new MutationObserver(forceEnable)
+                    .observe(w, {attributes: true, subtree: true, childList: true});
+            })();
+
+            // ③ 캡처 클릭 인터셉터: disabled 버튼 클릭 시 wrapper까지 이벤트가 오면
+            //    disabled를 제거하고 버튼에 클릭을 재발행
+            (function setupClickIntercept() {
+                var w = document.getElementById(id);
+                if (!w) { setTimeout(setupClickIntercept, 300); return; }
+                w.addEventListener('click', function(e) {
+                    var b = getBtn();
+                    if (b && b.disabled) {
+                        e.stopImmediatePropagation();
+                        b.removeAttribute('disabled');
+                        b.disabled = false;
+                        b.click();
+                    }
+                }, true); // capture phase
+            })();
         }
-        keepBtnEnabled('image-generate-btn');
+        keepBtnClickable('image-generate-btn');
+    })();
+
+    // ── 라이트박스: 이미지 외부 영역 클릭 시 자동 닫기 ──────────────────────
+    (function() {
+        document.addEventListener('click', function(e) {
+            var lb = document.querySelector('[data-testid="lightbox"]')
+                  || document.querySelector('.lightbox');
+            if (!lb) return;
+            // 클릭 대상이 이미지·버튼·캡션이 아닌 라이트박스 내부 배경 영역이면 닫기
+            if (lb.contains(e.target)
+                && !e.target.closest('img')
+                && !e.target.closest('button')
+                && !e.target.closest('[data-testid="caption"]')
+                && !e.target.closest('.caption')
+                && !e.target.closest('[class*="caption"]')) {
+                var closeBtn = lb.querySelector('button:last-child');
+                if (closeBtn) closeBtn.click();
+            }
+        }, true);
     })();
 
     // ── 라이트박스 열릴 때 썸네일 → 원본 이미지로 교체 ──────────────────────
@@ -1627,7 +1692,7 @@ def build_ui() -> gr.Blocks:
                     _use_as_ref_selected,
                     inputs=[ms_state_gen, ref_image_upload],
                     outputs=[ref_image_upload],
-                    js="(ms, files) => [window.__getSelJson('live-gallery', ms), files]",
+                    js="(ms, files) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : -1; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), files] : [window.__getSelJson('live-gallery', ms), files]; }",
                 )
 
                 delete_gen_fn = build_delete_selected_fn(gallery_state)
@@ -2018,7 +2083,7 @@ def build_ui() -> gr.Blocks:
                     _use_as_ref_selected,
                     inputs=[ms_state_gallery, ref_image_upload],
                     outputs=[ref_image_upload],
-                    js="(ms, files) => [window.__getSelJson('full-gallery', ms), files]",
+                    js="(ms, files) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : -1; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), files] : [window.__getSelJson('full-gallery', ms), files]; }",
                 )
 
                 delete_gallery_fn = build_delete_selected_fn(gallery_state)
@@ -2081,14 +2146,14 @@ def build_ui() -> gr.Blocks:
             on_make_video_selected,
             inputs=[ms_state_gen, selected_img_idx_gen],
             outputs=[ref_image_vid, main_tabs],
-            js="(ms, idx) => [window.__getSelJson('live-gallery', ms), idx]",
+            js="(ms, idx) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : idx; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), oi] : [window.__getSelJson('live-gallery', ms), oi]; }",
         )
 
         btn_make_video_gallery.click(
             on_make_video_selected,
             inputs=[ms_state_gallery, selected_img_idx_gallery],
             outputs=[ref_image_vid, main_tabs],
-            js="(ms, idx) => [window.__getSelJson('full-gallery', ms), idx]",
+            js="(ms, idx) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : idx; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), oi] : [window.__getSelJson('full-gallery', ms), oi]; }",
         )
 
         # 오버레이 영상화 버튼 핸들러 (개별 이미지 기준, triggerOverlayAction 경유)
