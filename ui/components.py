@@ -1150,6 +1150,10 @@ def build_ui() -> gr.Blocks:
                 )
 
                 generate_fn = build_generate_fn(gallery_state)
+
+                def refresh_live_gallery_after_generate():
+                    return gallery_state.to_gradio_gallery()
+
                 btn_generate.click(
                     generate_fn,
                     inputs=[
@@ -1162,7 +1166,7 @@ def build_ui() -> gr.Blocks:
                     ],
                     outputs=[gen_status],
                 ).then(
-                    lambda: gallery_state.to_gradio_gallery(),
+                    refresh_live_gallery_after_generate,
                     outputs=[live_gallery],
                 ).then(
                     update_ref_visibility,
