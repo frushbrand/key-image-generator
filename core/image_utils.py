@@ -17,6 +17,24 @@ from config.settings import OUTPUT_BASE_DIR, ASPECT_RATIOS, QUALITY_OPTIONS
 # 갤러리 표시용 썸네일 최대 크기 (픽셀)
 THUMBNAIL_SIZE = 512
 
+# 생성 대기 중 슬롯에 표시할 플레이스홀더 이미지 경로
+PLACEHOLDER_IMAGE_PATH = str(Path(OUTPUT_BASE_DIR) / "_placeholder.png")
+
+
+def ensure_placeholder_image() -> str:
+    """로딩 플레이스홀더 이미지를 생성합니다 (없는 경우).
+    outputs/ 디렉토리에 저장되며 갤러리에서 Gradio가 직접 서빙합니다."""
+    path = PLACEHOLDER_IMAGE_PATH
+    if not os.path.exists(path):
+        Path(OUTPUT_BASE_DIR).mkdir(parents=True, exist_ok=True)
+        from PIL import ImageDraw
+        img = Image.new("RGB", (512, 512), color=(22, 22, 38))
+        draw = ImageDraw.Draw(img)
+        # 가운데에 연한 텍스트 (기본 폰트 사용)
+        draw.text((180, 230), "Generating...", fill=(120, 120, 200))
+        img.save(path, format="PNG")
+    return path
+
 
 def get_thumbnail_path(image_path: str) -> str:
     """원본 이미지 경로로부터 썸네일 파일 경로를 계산합니다.

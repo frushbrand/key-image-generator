@@ -32,7 +32,6 @@ from config.settings import (
 )
 from core.gemini_client import validate_api_key, generate_batch_images
 from core.generation_stats import (
-    get_avg_image_time,
     get_avg_video_time,
     record_video_generation,
 )
@@ -51,8 +50,8 @@ from core.image_utils import (
     save_video,
     create_zip_from_paths,
     get_thumbnail_path,
-    create_thumbnail,
-    THUMBNAIL_SIZE,
+    PLACEHOLDER_IMAGE_PATH,
+    ensure_placeholder_image,
     load_existing_outputs,
     load_existing_video_outputs,
     get_disk_usage_text,
@@ -121,6 +120,28 @@ APP_CSS = """
             pointer-events: auto !important;
         }
 
+        /* 갤러리 캡션(라이트박스 포함) 전체 표시 - 잘림 방지 */
+        [data-testid="caption"],
+        .gallery-item .caption,
+        [class*="caption"] {
+            white-space: pre-wrap !important;
+            overflow: visible !important;
+            text-overflow: unset !important;
+            display: block !important;
+            max-height: none !important;
+        }
+
+        /* 생성 대기 중(pending) 플레이스홀더 이미지: 맥박 애니메이션 */
+        [data-testid="thumbnail"] img[src*="_placeholder"],
+        .thumbnail-item img[src*="_placeholder"] {
+            animation: gallery-pending-pulse 1.4s ease-in-out infinite !important;
+            filter: brightness(0.65) !important;
+        }
+        @keyframes gallery-pending-pulse {
+            0%, 100% { opacity: 0.35; }
+            50%       { opacity: 0.85; }
+        }
+
         /* 파일 다운로드 출력 위젯: MutationObserver 감지를 위해 DOM에 존재하되 숨김
            Gradio 5는 visible=False 시 DOM에서 완전히 제거(Svelte 조건부 렌더링)하므로
            JS에서 접근해야 하는 컴포넌트는 visible=True + CSS hidden 방식 사용 */
@@ -145,10 +166,6 @@ APP_CSS = """
         }
         """
 
-
-# 진행률 상한: 완료 수 기반 진행률은 최대 이 값까지만 반영
-# (시간 기반 진행률과 병행 시 100%를 절대 미리 표시하지 않도록 여유를 둠)
-_MAX_COUNT_PROGRESS = 0.98
 
 # 레퍼런스 이미지 미리보기 썸네일 크기 (픽셀)
 _REF_THUMBNAIL_SIZE = 256
@@ -371,7 +388,7 @@ def build_unified_video_fn(gallery_state: GalleryState):
 
 
 def build_generate_fn(gallery_state: GalleryState):
-    """생성 버튼 클릭 핸들러 팩토리"""
+    """생성 버튼 클릭 핸들러 팩토리 (제너레이터 방식: 이미지 완성 즉시 갤러리 업데이트)"""
 
     def generate(
         model_name: str,
@@ -380,30 +397,24 @@ def build_generate_fn(gallery_state: GalleryState):
         quality: str,
         count: int,
         ref_images,          # Gradio File 컴포넌트 값 (list of paths or None)
-        progress=gr.Progress(track_tqdm=True),
     ):
+        import queue as _queue
+        import threading as _threading
+        import time as _time
+
         cfg = load_settings()
         api_key = cfg.get("api_key", "")
         if not api_key or not api_key.strip():
             gr.Warning("API 키 설정 탭에서 Google API 키를 먼저 저장해주세요.")
-            return gallery_state.get_summary()
+            yield gallery_state.to_gradio_gallery(), gallery_state.get_summary()
+            return
 
         if not prompt or not prompt.strip():
             gr.Warning("프롬프트를 입력해주세요.")
-            return gallery_state.get_summary()
+            yield gallery_state.to_gradio_gallery(), gallery_state.get_summary()
+            return
 
         count = max(1, min(int(count), MAX_COUNT))
-        import time as _time
-        import math as _math
-        start_time = _time.time()
-
-        # 모델별 평균 시간을 기준으로 예상 소요 시간 계산
-        # 병렬 워커 수(최대 5)를 고려해 배치 소요 시간 추정
-        avg_per_image = get_avg_image_time(model_name)
-        n_batches = _math.ceil(count / 5)
-        expected_total = avg_per_image * n_batches
-
-        progress(0.02, desc=f"이미지 {count}장 생성 시작... (예상 {int(expected_total)}초 소요)")
 
         # 레퍼런스 이미지 로드
         ref_pil_images: list[Image.Image] = []
@@ -413,83 +424,82 @@ def build_generate_fn(gallery_state: GalleryState):
             ref_pil_images = load_reference_images(ref_paths[:MAX_REFERENCE_IMAGES])
             ref_paths = ref_paths[:MAX_REFERENCE_IMAGES]
 
-        completed = [0]
-        new_items: list[GalleryItem] = []
+        # ① 즉시 N개의 대기 중 슬롯 생성
+        allocated_indices = gallery_state.allocate_pending_items(
+            count, model_name, ratio, quality, prompt
+        )
 
-        def on_progress(idx, img, err):
-            completed[0] += 1
-            elapsed = _time.time() - start_time
-            # 시간 기반 진행률: 평균 시간 대비 경과 시간 (최대 0.99)
-            time_frac = min(elapsed / expected_total, 0.99)
-            # 완료 수 기반 진행률 (시간 초과 시에도 100%를 미리 표시하지 않도록 상한 적용)
-            count_frac = (completed[0] / count) * _MAX_COUNT_PROGRESS
-            frac = max(time_frac, count_frac)
-            progress(
-                frac,
-                desc=f"생성 중... {completed[0]}/{count}장 완료 | ⏱️ {int(elapsed)}초 / 예상 {int(expected_total)}초",
-            )
-            offset = len(gallery_state.items)
+        # ② 갤러리를 즉시 업데이트 (플레이스홀더 표시)
+        yield gallery_state.to_gradio_gallery(), f"⏳ {count}장 생성 시작..."
+
+        # ③ 완료 결과를 주고받는 큐
+        result_queue: _queue.Queue = _queue.Queue()
+
+        def on_progress(idx: int, img, err):
+            result_queue.put((idx, img, err))
+
+        start_time = _time.time()
+
+        # ④ 백그라운드 스레드에서 실제 이미지 생성
+        def run_generation():
+            try:
+                generate_batch_images(
+                    api_key=api_key.strip(),
+                    model_name=model_name,
+                    prompt=prompt,
+                    ratio=ratio,
+                    quality=quality,
+                    count=count,
+                    reference_images=ref_pil_images if ref_pil_images else None,
+                    progress_callback=on_progress,
+                )
+            finally:
+                result_queue.put(None)  # 완료 센티널
+
+        gen_thread = _threading.Thread(target=run_generation, daemon=True)
+        gen_thread.start()
+
+        # ⑤ 결과가 도착할 때마다 해당 슬롯을 채우고 갤러리를 즉시 업데이트
+        finished = 0
+        failed_errors: list[str] = []
+
+        while finished < count:
+            try:
+                result = result_queue.get(timeout=600)  # 10분 타임아웃
+            except _queue.Empty:
+                break
+
+            if result is None:
+                break
+
+            idx, img, err = result
+            gallery_index = allocated_indices[idx]
+
             if img is not None:
                 img_path, _, thumb_path = save_image(
                     img, model_name, ratio, prompt, quality,
                     reference_image_paths=ref_paths,
                 )
-                # THUMBNAIL_SIZE px 썸네일을 item.image로 저장 (메모리 절약)
-                thumb_img = img.copy()
-                thumb_img.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE), Image.LANCZOS)
-                item = GalleryItem(
-                    image=thumb_img,
-                    image_path=img_path,
-                    thumbnail_path=thumb_path,
-                    model=model_name,
-                    ratio=ratio,
-                    quality=quality,
-                    prompt=prompt,
-                    index=offset + idx,
-                    status="success",
-                    reference_image_paths=ref_paths,
-                )
+                gallery_state.fill_pending_item(gallery_index, img_path, thumb_path, "success")
             else:
-                item = GalleryItem(
-                    image=None,
-                    image_path="",
-                    model=model_name,
-                    ratio=ratio,
-                    quality=quality,
-                    prompt=prompt,
-                    index=offset + idx,
-                    status="failed",
-                    error=err,
-                )
-            new_items.append(item)
+                gallery_state.fill_pending_item(gallery_index, "", "", "failed", err)
+                failed_errors.append(f"  • #{gallery_index + 1}: {err}")
 
-        generate_batch_images(
-            api_key=api_key.strip(),
-            model_name=model_name,
-            prompt=prompt,
-            ratio=ratio,
-            quality=quality,
-            count=count,
-            reference_images=ref_pil_images if ref_pil_images else None,
-            progress_callback=on_progress,
-        )
-        new_items.sort(key=lambda x: x.index)
-        for item in new_items:
-            gallery_state.add(item)
-
-        progress(1.0, desc="완료!")
-        elapsed_total = int(_time.time() - start_time)
-
-        # 실패 항목 오류 메시지 수집
-        failed_items = [item for item in new_items if item.status == "failed"]
-        status_msg = gallery_state.get_summary() + f" (⏱️ {elapsed_total}초 소요)"
-        if failed_items:
-            error_details = "\n".join(
-                f"  • #{item.index + 1}: {item.error}" for item in failed_items
+            finished += 1
+            elapsed = int(_time.time() - start_time)
+            yield (
+                gallery_state.to_gradio_gallery(),
+                f"⏳ 생성 중... {finished}/{count}장 완료 | ⏱️ {elapsed}초",
             )
-            status_msg += f"\n\n❌ 실패 원인:\n{error_details}"
 
-        return status_msg
+        gen_thread.join(timeout=1)
+
+        elapsed_total = int(_time.time() - start_time)
+        status_msg = gallery_state.get_summary() + f" (⏱️ {elapsed_total}초 소요)"
+        if failed_errors:
+            status_msg += "\n\n❌ 실패 원인:\n" + "\n".join(failed_errors)
+
+        yield gallery_state.to_gradio_gallery(), status_msg
 
     return generate
 
@@ -648,6 +658,9 @@ def build_delete_selected_fn(gallery_state: GalleryState):
 # ── UI 빌더 ──────────────────────────────────────────────────────────────────
 
 def build_ui() -> gr.Blocks:
+    # 로딩 플레이스홀더 이미지 준비 (없으면 생성)
+    ensure_placeholder_image()
+
     gallery_state = GalleryState()
     saved = load_settings()
     saved_api_key = saved.get("api_key", "")
@@ -1400,9 +1413,6 @@ def build_ui() -> gr.Blocks:
 
                 generate_fn = build_generate_fn(gallery_state)
 
-                def refresh_live_gallery_after_generate():
-                    return gallery_state.to_gradio_gallery()
-
                 btn_generate.click(
                     generate_fn,
                     inputs=[
@@ -1413,10 +1423,8 @@ def build_ui() -> gr.Blocks:
                         count_slider,
                         ref_image_upload,
                     ],
-                    outputs=[gen_status],
-                ).then(
-                    refresh_live_gallery_after_generate,
-                    outputs=[live_gallery],
+                    outputs=[live_gallery, gen_status],
+                    concurrency_limit=None,  # 여러 생성 작업 동시 큐 허용
                 ).then(
                     update_ref_visibility,
                     inputs=[ref_image_upload],
