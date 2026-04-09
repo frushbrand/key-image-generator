@@ -107,17 +107,28 @@ APP_CSS = """
             pointer-events: auto !important;
         }
 
-        /* 내부 상태/다운로드 위젯: DOM에 존재하되 시각적으로 숨김
+        /* 파일 다운로드 출력 위젯: MutationObserver 감지를 위해 DOM에 존재하되 숨김
            Gradio 5는 visible=False 시 DOM에서 완전히 제거(Svelte 조건부 렌더링)하므로
            JS에서 접근해야 하는 컴포넌트는 visible=True + CSS hidden 방식 사용 */
-        #ms-state-gen, #ms-state-gallery,
-        #ms-toggle-gen, #ms-toggle-gallery,
         #single-png-gen, #selected-zip-gen,
         #single-png-gallery, #full-zip-gallery, #selected-zip-gallery,
-        #selected-videos-zip, #all-videos-zip,
+        #selected-videos-zip, #all-videos-zip {
+            display: none !important;
+        }
+        /* 내부 상태/트리거 텍스트박스: display:none 대신 화면 밖 배치 사용
+           display:none 시 Gradio 5 Svelte 이벤트 파이프라인이 synthetic event를
+           처리하지 않아 Python 핸들러가 트리거되지 않음 */
+        #ms-state-gen, #ms-state-gallery,
+        #ms-toggle-gen, #ms-toggle-gallery,
         #overlay-dl-gen, #overlay-vid-gen, #overlay-ref-gen,
         #overlay-dl-gallery, #overlay-vid-gallery, #overlay-ref-gallery {
-            display: none !important;
+            position: absolute !important;
+            left: -9999px !important;
+            top: auto !important;
+            width: 1px !important;
+            height: 1px !important;
+            overflow: hidden !important;
+            pointer-events: none !important;
         }
         """
 
@@ -661,6 +672,27 @@ def build_ui() -> gr.Blocks:
         });
         ov.addEventListener('mouseleave', hideOv);
 
+        // 갤러리 img src에서 직접 파일 다운로드 (Python 핸들러 없이 신뢰성 있는 다운로드)
+        function downloadFromGallery(gid, idx) {
+            var g = document.getElementById(gid); if (!g) return false;
+            var items = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
+            if (!items.length) items = Array.from(g.querySelectorAll('.thumbnail-item'));
+            if (!items.length) items = Array.from(g.querySelectorAll('[class*="thumbnail-item"]'));
+            var item = items[idx]; if (!item) return false;
+            var img = item.querySelector('img');
+            if (!img || !img.src || img.src.indexOf('data:') === 0) return false;
+            // Gradio 파일 서빙 URL (예: /gradio_api/file=.../outputs/xxx.png)에서 파일명 추출
+            var rawSrc = decodeURIComponent(img.src);
+            var filename = rawSrc.split('=').pop().split('/').pop().split('?')[0];
+            if (!filename || !filename.match(/\.(png|jpg|jpeg|webp|gif)$/i)) filename = 'image.png';
+            var a = document.createElement('a');
+            a.href = img.src;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            return true;
+        }
         // 오버레이 버튼 클릭: 라이트박스 열지 않고 서버 액션 직접 트리거
         function triggerOverlayAction(gid, key, idx) {
             var tbMap = {
@@ -672,16 +704,25 @@ def build_ui() -> gr.Blocks:
             var inp = wrapper.querySelector('input[type="text"],textarea'); if (!inp) return;
             // idx:timestamp 형식으로 설정하여 같은 인덱스 반복 클릭도 이벤트 발생
             var val = idx + ':' + Date.now();
-            try {
-                Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(inp, val);
-            } catch(e2) { inp.value = val; }
-            inp.dispatchEvent(new Event('input', {bubbles: true}));
+            var proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+            var nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(inp, val); } else { inp.value = val; }
+            inp.dispatchEvent(new InputEvent('input', {bubbles: true, cancelable: true}));
             inp.dispatchEvent(new Event('change', {bubbles: true}));
         }
         ov.addEventListener('mousedown', function(e) {
             var btn = e.target.closest('[data-k]'); if (!btn || !curItem || !curCfg) return;
             e.preventDefault(); e.stopPropagation();
-            triggerOverlayAction(curCfg.id, btn.dataset.k, curItemIdx);
+            if (btn.dataset.k === 'dl') {
+                // PNG 다운로드: 갤러리 img src에서 직접 다운로드 (원본 PNG 파일 서빙)
+                // gallery가 file path를 사용하므로 img src = 원본 PNG 경로
+                if (!downloadFromGallery(curCfg.id, curItemIdx)) {
+                    // 폴백: Python 핸들러 트리거
+                    triggerOverlayAction(curCfg.id, btn.dataset.k, curItemIdx);
+                }
+            } else {
+                triggerOverlayAction(curCfg.id, btn.dataset.k, curItemIdx);
+            }
         });
         window.addEventListener('scroll', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); }, true);
         window.addEventListener('resize', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); });
@@ -737,10 +778,10 @@ def build_ui() -> gr.Blocks:
             var wrapper = document.getElementById(TBIDS[gid]); if (!wrapper) return;
             var inp = wrapper.querySelector('input[type="text"],textarea'); if (!inp) return;
             var val = JSON.stringify([...sels[gid]]);
-            try {
-                Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(inp, val);
-            } catch(e) { console.warn('Native setter failed, using fallback:', e); inp.value = val; }
-            inp.dispatchEvent(new Event('input', {bubbles: true}));
+            var proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+            var nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(inp, val); } else { inp.value = val; }
+            inp.dispatchEvent(new InputEvent('input', {bubbles: true, cancelable: true}));
             inp.dispatchEvent(new Event('change', {bubbles: true}));
         }
         function refreshOverlays(gid) {

@@ -58,20 +58,22 @@ class GalleryState:
             return success_items[real_idx]
         return None
 
-    def to_gradio_gallery(self) -> list[tuple[Image.Image, str]]:
+    def to_gradio_gallery(self) -> list[tuple[str, str]]:
         """
         Gradio Gallery 컴포넌트에 전달할 형식으로 변환합니다.
-        각 항목은 (image, caption) 튜플이며, 최신 항목이 맨 앞(왼쪽 위)에 표시됩니다.
+        각 항목은 (image_path, caption) 튜플이며, 최신 항목이 맨 앞(왼쪽 위)에 표시됩니다.
+        파일 경로를 직접 사용하므로 Gradio가 원본 PNG를 그대로 서빙하고,
+        오버레이 다운로드 버튼이 img src에서 원본 파일을 직접 내려받을 수 있습니다.
         """
         result = []
         for item in reversed(self._items):
-            if item.image is None:
+            if not item.image_path or not os.path.exists(item.image_path):
                 continue
             caption = (
                 f"#{item.index + 1} | {item.model} | {item.ratio} | {item.quality}\n"
                 f"{item.prompt[:80]}{'...' if len(item.prompt) > 80 else ''}"
             )
-            result.append((item.image, caption))
+            result.append((item.image_path, caption))
         return result
 
     def get_summary(self) -> str:
