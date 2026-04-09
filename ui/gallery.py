@@ -20,6 +20,7 @@ class GalleryItem:
     index: int
     status: str = "success"
     error: Optional[str] = None
+    reference_image_paths: list = field(default_factory=list)
 
 
 class GalleryState:

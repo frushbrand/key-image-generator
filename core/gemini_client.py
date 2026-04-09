@@ -18,6 +18,7 @@ from PIL import Image
 from config.settings import (
     MODELS,
     MAX_RETRY,
+    QUALITY_OPTIONS,
 )
 
 
@@ -42,6 +43,15 @@ def validate_api_key(api_key: str) -> tuple[bool, str]:
         if "quota" in err.lower():
             return True, "✅ API 키가 유효합니다. (할당량 초과 상태일 수 있습니다)"
         return False, f"❌ 오류 발생: {err}"
+
+
+def _get_image_config(ratio: str, quality: str) -> types.ImageConfig:
+    """비율과 화질로 Gemini API ImageConfig를 생성합니다."""
+    image_size = QUALITY_OPTIONS.get(quality, {}).get("api_image_size", "2K")
+    return types.ImageConfig(
+        aspect_ratio=ratio,
+        image_size=image_size,
+    )
 
 
 def _pil_to_bytes(image: Image.Image, fmt: str = "PNG") -> bytes:
@@ -81,6 +91,7 @@ def generate_with_nano_banana_2(
         contents=contents,
         config=types.GenerateContentConfig(
             response_modalities=["IMAGE", "TEXT"],
+            image_config=_get_image_config(ratio, quality),
         ),
     )
 
@@ -127,6 +138,7 @@ def generate_with_nano_banana_pro(
         contents=contents,
         config=types.GenerateContentConfig(
             response_modalities=["IMAGE", "TEXT"],
+            image_config=_get_image_config(ratio, quality),
         ),
     )
 
@@ -172,6 +184,7 @@ def generate_with_nano_banana(
         contents=contents,
         config=types.GenerateContentConfig(
             response_modalities=["IMAGE", "TEXT"],
+            image_config=_get_image_config(ratio, quality),
         ),
     )
 
