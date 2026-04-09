@@ -32,7 +32,6 @@ from config.settings import (
 )
 from core.gemini_client import validate_api_key, generate_batch_images
 from core.generation_stats import (
-    get_avg_image_time,
     get_avg_video_time,
     record_video_generation,
 )
@@ -50,6 +49,9 @@ from core.image_utils import (
     save_image,
     save_video,
     create_zip_from_paths,
+    get_thumbnail_path,
+    PLACEHOLDER_IMAGE_PATH,
+    ensure_placeholder_image,
     load_existing_outputs,
     load_existing_video_outputs,
     get_disk_usage_text,
@@ -92,10 +94,16 @@ APP_CSS = """
         /* 공유(Share) 버튼 완전 숨김 */
         button[aria-label="Share"],
         button[title="Share"],
+        button[aria-label*="share" i],
         [data-testid="share-button"],
         .share-button,
         .lightbox button[aria-label="Share"],
-        [data-testid="lightbox"] button[aria-label="Share"] {
+        [data-testid="lightbox"] button[aria-label="Share"],
+        .image-frame button[aria-label="Share"],
+        .fixed button[aria-label="Share"],
+        [class*="icon-button"][aria-label="Share"],
+        [class*="share"] button,
+        button[class*="share"] {
             display: none !important;
         }
 
@@ -112,6 +120,28 @@ APP_CSS = """
             pointer-events: auto !important;
         }
 
+        /* 갤러리 캡션(라이트박스 포함) 전체 표시 - 잘림 방지 */
+        [data-testid="caption"],
+        .gallery-item .caption,
+        [class*="caption"] {
+            white-space: pre-wrap !important;
+            overflow: visible !important;
+            text-overflow: unset !important;
+            display: block !important;
+            max-height: none !important;
+        }
+
+        /* 생성 대기 중(pending) 플레이스홀더 이미지: 맥박 애니메이션 */
+        [data-testid="thumbnail"] img[src*="_placeholder"],
+        .thumbnail-item img[src*="_placeholder"] {
+            animation: gallery-pending-pulse 1.4s ease-in-out infinite !important;
+            filter: brightness(0.65) !important;
+        }
+        @keyframes gallery-pending-pulse {
+            0%, 100% { opacity: 0.35; }
+            50%       { opacity: 0.85; }
+        }
+
         /* 파일 다운로드 출력 위젯: MutationObserver 감지를 위해 DOM에 존재하되 숨김
            Gradio 5는 visible=False 시 DOM에서 완전히 제거(Svelte 조건부 렌더링)하므로
            JS에서 접근해야 하는 컴포넌트는 visible=True + CSS hidden 방식 사용 */
@@ -124,7 +154,6 @@ APP_CSS = """
            display:none 시 Gradio 5 Svelte 이벤트 파이프라인이 synthetic event를
            처리하지 않아 Python 핸들러가 트리거되지 않음 */
         #ms-state-gen, #ms-state-gallery,
-        #ms-toggle-gen, #ms-toggle-gallery,
         #overlay-dl-gen, #overlay-vid-gen, #overlay-ref-gen,
         #overlay-dl-gallery, #overlay-vid-gallery, #overlay-ref-gallery {
             position: absolute !important;
@@ -138,9 +167,11 @@ APP_CSS = """
         """
 
 
-# 진행률 상한: 완료 수 기반 진행률은 최대 이 값까지만 반영
-# (시간 기반 진행률과 병행 시 100%를 절대 미리 표시하지 않도록 여유를 둠)
-_MAX_COUNT_PROGRESS = 0.98
+# 레퍼런스 이미지 미리보기 썸네일 크기 (픽셀)
+_REF_THUMBNAIL_SIZE = 256
+
+# 이미지 생성 큐 결과 대기 타임아웃 (초)
+_GENERATE_TIMEOUT_SECONDS = 600
 
 # ── 경로 안전 검사 ──────────────────────────────────────────────────────────
 
@@ -360,7 +391,7 @@ def build_unified_video_fn(gallery_state: GalleryState):
 
 
 def build_generate_fn(gallery_state: GalleryState):
-    """생성 버튼 클릭 핸들러 팩토리"""
+    """생성 버튼 클릭 핸들러 팩토리 (제너레이터 방식: 이미지 완성 즉시 갤러리 업데이트)"""
 
     def generate(
         model_name: str,
@@ -369,30 +400,24 @@ def build_generate_fn(gallery_state: GalleryState):
         quality: str,
         count: int,
         ref_images,          # Gradio File 컴포넌트 값 (list of paths or None)
-        progress=gr.Progress(track_tqdm=True),
     ):
+        import queue as _queue
+        import threading as _threading
+        import time as _time
+
         cfg = load_settings()
         api_key = cfg.get("api_key", "")
         if not api_key or not api_key.strip():
             gr.Warning("API 키 설정 탭에서 Google API 키를 먼저 저장해주세요.")
-            return gallery_state.to_gradio_gallery(), gallery_state.get_summary()
+            yield gallery_state.to_gradio_gallery(), gallery_state.get_summary()
+            return
 
         if not prompt or not prompt.strip():
             gr.Warning("프롬프트를 입력해주세요.")
-            return gallery_state.to_gradio_gallery(), gallery_state.get_summary()
+            yield gallery_state.to_gradio_gallery(), gallery_state.get_summary()
+            return
 
         count = max(1, min(int(count), MAX_COUNT))
-        import time as _time
-        import math as _math
-        start_time = _time.time()
-
-        # 모델별 평균 시간을 기준으로 예상 소요 시간 계산
-        # 병렬 워커 수(최대 5)를 고려해 배치 소요 시간 추정
-        avg_per_image = get_avg_image_time(model_name)
-        n_batches = _math.ceil(count / 5)
-        expected_total = avg_per_image * n_batches
-
-        progress(0.02, desc=f"이미지 {count}장 생성 시작... (예상 {int(expected_total)}초 소요)")
 
         # 레퍼런스 이미지 로드
         ref_pil_images: list[Image.Image] = []
@@ -402,79 +427,82 @@ def build_generate_fn(gallery_state: GalleryState):
             ref_pil_images = load_reference_images(ref_paths[:MAX_REFERENCE_IMAGES])
             ref_paths = ref_paths[:MAX_REFERENCE_IMAGES]
 
-        completed = [0]
-        new_items: list[GalleryItem] = []
+        # ① 즉시 N개의 대기 중 슬롯 생성
+        allocated_indices = gallery_state.allocate_pending_items(
+            count, model_name, ratio, quality, prompt
+        )
 
-        def on_progress(idx, img, err):
-            completed[0] += 1
-            elapsed = _time.time() - start_time
-            # 시간 기반 진행률: 평균 시간 대비 경과 시간 (최대 0.99)
-            time_frac = min(elapsed / expected_total, 0.99)
-            # 완료 수 기반 진행률 (시간 초과 시에도 100%를 미리 표시하지 않도록 상한 적용)
-            count_frac = (completed[0] / count) * _MAX_COUNT_PROGRESS
-            frac = max(time_frac, count_frac)
-            progress(
-                frac,
-                desc=f"생성 중... {completed[0]}/{count}장 완료 | ⏱️ {int(elapsed)}초 / 예상 {int(expected_total)}초",
-            )
-            offset = len(gallery_state.items)
+        # ② 갤러리를 즉시 업데이트 (플레이스홀더 표시)
+        yield gallery_state.to_gradio_gallery(), f"⏳ {count}장 생성 시작..."
+
+        # ③ 완료 결과를 주고받는 큐
+        result_queue: _queue.Queue = _queue.Queue()
+
+        def on_progress(idx: int, img, err):
+            result_queue.put((idx, img, err))
+
+        start_time = _time.time()
+
+        # ④ 백그라운드 스레드에서 실제 이미지 생성
+        def run_generation():
+            try:
+                generate_batch_images(
+                    api_key=api_key.strip(),
+                    model_name=model_name,
+                    prompt=prompt,
+                    ratio=ratio,
+                    quality=quality,
+                    count=count,
+                    reference_images=ref_pil_images if ref_pil_images else None,
+                    progress_callback=on_progress,
+                )
+            finally:
+                result_queue.put(None)  # 완료 센티널
+
+        gen_thread = _threading.Thread(target=run_generation, daemon=True)
+        gen_thread.start()
+
+        # ⑤ 결과가 도착할 때마다 해당 슬롯을 채우고 갤러리를 즉시 업데이트
+        finished = 0
+        failed_errors: list[str] = []
+
+        while finished < count:
+            try:
+                result = result_queue.get(timeout=_GENERATE_TIMEOUT_SECONDS)
+            except _queue.Empty:
+                break
+
+            if result is None:
+                break
+
+            idx, img, err = result
+            gallery_index = allocated_indices[idx]
+
             if img is not None:
-                img_path, _ = save_image(
+                img_path, _, thumb_path = save_image(
                     img, model_name, ratio, prompt, quality,
                     reference_image_paths=ref_paths,
                 )
-                item = GalleryItem(
-                    image=img,
-                    image_path=img_path,
-                    model=model_name,
-                    ratio=ratio,
-                    quality=quality,
-                    prompt=prompt,
-                    index=offset + idx,
-                    status="success",
-                    reference_image_paths=ref_paths,
-                )
+                gallery_state.fill_pending_item(gallery_index, img_path, thumb_path, "success")
             else:
-                item = GalleryItem(
-                    image=None,
-                    image_path="",
-                    model=model_name,
-                    ratio=ratio,
-                    quality=quality,
-                    prompt=prompt,
-                    index=offset + idx,
-                    status="failed",
-                    error=err,
-                )
-            new_items.append(item)
+                gallery_state.fill_pending_item(gallery_index, "", "", "failed", err)
+                failed_errors.append(f"  • #{gallery_index + 1}: {err}")
 
-        generate_batch_images(
-            api_key=api_key.strip(),
-            model_name=model_name,
-            prompt=prompt,
-            ratio=ratio,
-            quality=quality,
-            count=count,
-            reference_images=ref_pil_images if ref_pil_images else None,
-            progress_callback=on_progress,
-        )
-        new_items.sort(key=lambda x: x.index)
-        for item in new_items:
-            gallery_state.add(item)
-
-        progress(1.0, desc="완료!")
-        elapsed_total = int(_time.time() - start_time)
-
-        # 실패 항목 오류 메시지 수집
-        failed_items = [item for item in new_items if item.status == "failed"]
-        status_msg = gallery_state.get_summary() + f" (⏱️ {elapsed_total}초 소요)"
-        if failed_items:
-            error_details = "\n".join(
-                f"  • #{item.index + 1}: {item.error}" for item in failed_items
+            finished += 1
+            elapsed = int(_time.time() - start_time)
+            yield (
+                gallery_state.to_gradio_gallery(),
+                f"⏳ 생성 중... {finished}/{count}장 완료 | ⏱️ {elapsed}초",
             )
-            status_msg += f"\n\n❌ 실패 원인:\n{error_details}"
 
-        return gallery_state.to_gradio_gallery(), status_msg
+        gen_thread.join(timeout=1)
+
+        elapsed_total = int(_time.time() - start_time)
+        status_msg = gallery_state.get_summary() + f" (⏱️ {elapsed_total}초 소요)"
+        if failed_errors:
+            status_msg += "\n\n❌ 실패 원인:\n" + "\n".join(failed_errors)
+
+        yield gallery_state.to_gradio_gallery(), status_msg
 
     return generate
 
@@ -542,9 +570,100 @@ def build_download_selected_fn(gallery_state: GalleryState):
     return download_selected
 
 
+def build_smart_download_fn(gallery_state: GalleryState):
+    """단일 선택 → PNG, 다중 선택 → ZIP 스마트 다운로드 핸들러 팩토리"""
+
+    def smart_download(selected_json: str, current_idx: int):
+        try:
+            indices = json.loads(selected_json or "[]")
+        except (json.JSONDecodeError, ValueError):
+            indices = []
+
+        if len(indices) > 1:
+            # 다중 선택: ZIP 다운로드
+            paths = []
+            for raw_idx in indices:
+                try:
+                    item = gallery_state.get_success_item_by_visual_index(int(raw_idx))
+                    if item and item.image_path and os.path.exists(item.image_path):
+                        paths.append(item.image_path)
+                except (ValueError, TypeError):
+                    continue
+            if not paths:
+                gr.Warning("선택된 이미지 파일을 찾을 수 없습니다.")
+                return None
+            return create_zip_from_paths(paths)
+        elif len(indices) == 1:
+            # 단일 선택 (뱃지): PNG 다운로드
+            try:
+                item = gallery_state.get_success_item_by_visual_index(int(indices[0]))
+            except (ValueError, TypeError):
+                item = None
+        else:
+            # 뱃지 선택 없음: 마지막 클릭 이미지
+            item = gallery_state.get_success_item_by_visual_index(current_idx)
+
+        if item is None:
+            gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
+            return None
+        if not item.image_path or not os.path.exists(item.image_path):
+            gr.Warning("이미지 파일을 찾을 수 없습니다.")
+            return None
+        return item.image_path
+
+    return smart_download
+
+
+def build_delete_selected_fn(gallery_state: GalleryState):
+    """선택된 이미지를 디스크에서 삭제하고 갤러리 상태를 갱신하는 핸들러 팩토리"""
+
+    def delete_selected(selected_json: str, current_idx: int):
+        try:
+            indices = json.loads(selected_json or "[]")
+        except (json.JSONDecodeError, ValueError):
+            indices = []
+
+        if not indices and current_idx >= 0:
+            indices = [current_idx]
+
+        if not indices:
+            gr.Warning("삭제할 이미지를 먼저 선택해주세요.")
+            return gallery_state.to_gradio_gallery(), gallery_state.get_summary(), "[]", -1
+
+        removed_paths = gallery_state.remove_by_visual_indices(
+            [int(i) for i in indices]
+        )
+        for path in removed_paths:
+            if _is_safe_output_path(path):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                    meta_path = path.replace(".png", ".json")
+                    if os.path.exists(meta_path):
+                        os.remove(meta_path)
+                    thumb_path = get_thumbnail_path(path)
+                    if os.path.exists(thumb_path):
+                        os.remove(thumb_path)
+                except Exception:
+                    pass
+
+        deleted_count = len(removed_paths)
+        return (
+            gallery_state.to_gradio_gallery(),
+            gallery_state.get_summary() + f" (🗑️ {deleted_count}장 삭제됨)",
+            "[]",
+            -1,
+        )
+
+    return delete_selected
+
+
 # ── UI 빌더 ──────────────────────────────────────────────────────────────────
 
 def build_ui() -> gr.Blocks:
+    # 로딩 플레이스홀더 이미지 준비 (없으면 생성)
+    ensure_placeholder_image()
+
     gallery_state = GalleryState()
     saved = load_settings()
     saved_api_key = saved.get("api_key", "")
@@ -555,8 +674,9 @@ def build_ui() -> gr.Blocks:
     for i, entry in enumerate(load_existing_outputs()):
         gallery_state.add(
             GalleryItem(
-                image=entry["image"],
+                image=None,
                 image_path=entry["image_path"],
+                thumbnail_path=entry.get("thumbnail_path", ""),
                 model=entry["model"],
                 ratio=entry["ratio"],
                 quality=entry["quality"],
@@ -615,6 +735,14 @@ def build_ui() -> gr.Blocks:
             ? document.addEventListener('DOMContentLoaded', function() { setTimeout(restoreTab, 500); })
             : setTimeout(restoreTab, 500);
     })();
+
+    // ── 공통 유틸리티: 썸네일 URL → 원본 URL 변환 ──────────────────────────
+    function thumbSrcToOriginalSrc(src) {
+        // thumbs/ 서브폴더 경로를 원본 경로로 변환
+        // 예: /gradio_api/file=/path/outputs/2026-04-09/thumbs/file.png
+        //  → /gradio_api/file=/path/outputs/2026-04-09/file.png
+        return src.replace(/\/thumbs\/([^/?]+)(\?|$)/, '/$1$2');
+    }
 
     // ── 갤러리 호버 플로팅 오버레이 ─────────────────────────────────────────
     (function() {
@@ -700,7 +828,7 @@ def build_ui() -> gr.Blocks:
         });
         ov.addEventListener('mouseleave', hideOv);
 
-        // 갤러리 img src에서 직접 파일 다운로드 (Python 핸들러 없이 신뢰성 있는 다운로드)
+        // 갤러리 img src에서 직접 파일 다운로드 (썸네일 → 원본 경로로 변환 후 다운로드)
         function downloadFromGallery(gid, idx) {
             var g = document.getElementById(gid); if (!g) return false;
             var items = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
@@ -709,14 +837,13 @@ def build_ui() -> gr.Blocks:
             var item = items[idx]; if (!item) return false;
             var img = item.querySelector('img');
             if (!img || !img.src || img.src.indexOf('data:') === 0) return false;
-            // Gradio 파일 서빙 URL 형식: /gradio_api/file=<absolute_path>
-            // 예: /gradio_api/file=/home/user/project/outputs/2026-04-09/135000_model_ratio.png
-            // '=' 이후를 잘라 마지막 경로 컴포넌트(파일명)를 추출
-            var rawSrc = decodeURIComponent(img.src);
+            // 썸네일 src를 원본 src로 변환
+            var origSrc = thumbSrcToOriginalSrc(img.src);
+            var rawSrc = decodeURIComponent(origSrc);
             var filename = rawSrc.split('=').pop().split('/').pop().split('?')[0];
             if (!filename || !filename.match(/\.(png|jpg|jpeg|webp|gif)$/i)) filename = 'image.png';
             var a = document.createElement('a');
-            a.href = img.src;
+            a.href = origSrc;
             a.download = filename;
             document.body.appendChild(a);
             a.click();
@@ -765,18 +892,20 @@ def build_ui() -> gr.Blocks:
     (function() {
         var GIDS = ['live-gallery', 'full-gallery'];
         var TBIDS = {'live-gallery': 'ms-state-gen', 'full-gallery': 'ms-state-gallery'};
-        var CLEAR_IDS = {'live-gallery': 'ms-toggle-gen', 'full-gallery': 'ms-toggle-gallery'};
         var sels = {}, containers = {};
         var hoverGid = null, hoverIdx = -1;
         GIDS.forEach(function(id) { sels[id] = new Set(); containers[id] = null; });
 
-        // 호버 오버레이 섹션에서 호출: 마우스가 올라간 갤러리/인덱스 알림
         window.__msUpdateHover = function(gid, idx) {
-            var prevGid = hoverGid, prevIdx = hoverIdx;
+            var prevGid = hoverGid;
             hoverGid = (idx >= 0) ? gid : null;
             hoverIdx = idx;
             if (prevGid) updateBadgeOpacity(prevGid);
             if (gid) updateBadgeOpacity(gid);
+        };
+        window.__msGetSels = function(gid) { return sels[gid] ? [...sels[gid]] : []; };
+        window.__msClear = function(gid) {
+            if (sels[gid]) { sels[gid].clear(); syncTextbox(gid); refreshOverlays(gid); }
         };
 
         function updateBadgeOpacity(gid) {
@@ -789,7 +918,6 @@ def build_ui() -> gr.Blocks:
                 badge.style.opacity = (isSelected || isHovered) ? '1' : '0';
             }
         }
-
         function getItems(gid) {
             var g = document.getElementById(gid); if (!g) return [];
             var r = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
@@ -800,7 +928,6 @@ def build_ui() -> gr.Blocks:
         function getContainer(gid) {
             if (!containers[gid]) {
                 var c = document.createElement('div');
-                // z-index 10001: 호버 플로팅 오버레이(10000) 위에 표시
                 c.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:10001;';
                 document.body.appendChild(c);
                 containers[gid] = c;
@@ -822,25 +949,23 @@ def build_ui() -> gr.Blocks:
                 var badge = document.createElement('div');
                 badge.className = 'ms-badge';
                 badge.style.cssText = [
-                    'width:22px', 'height:22px', 'border-radius:50%',
-                    'display:flex', 'align-items:center', 'justify-content:center',
-                    'font-size:0.85rem', 'font-weight:700',
-                    'box-shadow:0 1px 4px rgba(0,0,0,0.5)', 'user-select:none',
-                    'pointer-events:auto', 'cursor:pointer',
+                    'width:22px','height:22px','border-radius:50%',
+                    'display:flex','align-items:center','justify-content:center',
+                    'font-size:0.85rem','font-weight:700',
+                    'box-shadow:0 1px 4px rgba(0,0,0,0.5)','user-select:none',
+                    'pointer-events:auto','cursor:pointer',
                     'transition:opacity 0.15s, background 0.15s',
-                    'border:2px solid rgba(255,255,255,0.7)',
-                    'opacity:0'
+                    'border:2px solid rgba(255,255,255,0.7)','opacity:0'
                 ].join(';');
                 d.appendChild(badge);
                 c.appendChild(d);
             }
             items.forEach(function(item, idx) {
                 var r = item.getBoundingClientRect(), d = c.children[idx];
-                d.style.left = r.left + 'px'; d.style.top = r.top + 'px';
-                d.style.width = r.width + 'px'; d.style.height = r.height + 'px';
+                d.style.left = r.left+'px'; d.style.top = r.top+'px';
+                d.style.width = r.width+'px'; d.style.height = r.height+'px';
                 var badge = d.querySelector('.ms-badge');
-                var isSelected = sel.has(idx);
-                var isHovered = isHoverGid && (idx === hoverIdx);
+                var isSelected = sel.has(idx), isHovered = isHoverGid && (idx === hoverIdx);
                 badge.style.background = isSelected ? '#4f46e5' : 'rgba(255,255,255,0.85)';
                 badge.style.borderColor = isSelected ? '#4f46e5' : 'rgba(0,0,0,0.35)';
                 badge.style.color = isSelected ? '#fff' : 'transparent';
@@ -856,57 +981,49 @@ def build_ui() -> gr.Blocks:
                 })(idx);
             });
         }
-        // 선택 초기화 버튼 클릭
-        document.addEventListener('click', function(e) {
-            GIDS.forEach(function(gid) {
-                var cid = CLEAR_IDS[gid];
-                if (e.target.closest('#' + cid)) {
-                    sels[gid].clear();
-                    syncTextbox(gid);
-                    refreshOverlays(gid);
-                }
-            });
-        });
-        // 갤러리 변경 감지 → 배지 갱신
-        var obs = new MutationObserver(function() {
-            GIDS.forEach(refreshOverlays);
-        });
+        var obs = new MutationObserver(function() { GIDS.forEach(refreshOverlays); });
         function attachObs() {
             GIDS.forEach(function(gid) {
                 var g = document.getElementById(gid);
                 if (g) obs.observe(g, {childList: true, subtree: true});
             });
         }
-        window.addEventListener('scroll', function() {
-            GIDS.forEach(refreshOverlays);
-        }, true);
-        window.addEventListener('resize', function() {
-            GIDS.forEach(refreshOverlays);
-        });
+        window.addEventListener('scroll', function() { GIDS.forEach(refreshOverlays); }, true);
+        window.addEventListener('resize', function() { GIDS.forEach(refreshOverlays); });
         setTimeout(attachObs, 800);
         setTimeout(function() { GIDS.forEach(refreshOverlays); }, 1500);
+    })();
 
-        // 다중 선택 모드: 하나 이상 선택된 상태에서 이미지 클릭 시 추가 선택 (라이트박스 방지)
-        GIDS.forEach(function(gid) {
-            function attachClickIntercept() {
-                var g = document.getElementById(gid);
-                if (!g) { setTimeout(attachClickIntercept, 500); return; }
-                g.addEventListener('click', function(e) {
-                    if (sels[gid].size === 0) return; // 선택 없으면 기본 동작 유지
-                    var items = getItems(gid);
-                    var item = e.target.closest('[data-testid="thumbnail"]')
-                        || e.target.closest('.thumbnail-item')
-                        || e.target.closest('[class*="thumbnail-item"]');
-                    if (!item) return;
-                    var idx = items.indexOf(item);
-                    if (idx < 0) return;
-                    e.preventDefault(); e.stopPropagation();
-                    if (sels[gid].has(idx)) sels[gid].delete(idx); else sels[gid].add(idx);
-                    refreshOverlays(gid); syncTextbox(gid);
-                }, true); // capture phase: Gradio 이벤트보다 먼저 처리
-            }
-            setTimeout(attachClickIntercept, 1000);
-        });
+    // ── 라이트박스 열릴 때 썸네일 → 원본 이미지로 교체 ──────────────────────
+    (function() {
+        new MutationObserver(function(mutations) {
+            mutations.forEach(function(m) {
+                m.addedNodes.forEach(function(node) {
+                    if (node.nodeType !== 1) return;
+                    // Gradio 라이트박스는 fixed div에 img를 포함
+                    var imgs = [];
+                    if (node.tagName === 'IMG') {
+                        imgs = [node];
+                    } else if (typeof node.querySelectorAll === 'function') {
+                        // 라이트박스 컨테이너로 추정되는 고정 위치 요소 내 이미지
+                        var fixed = node.style && node.style.position === 'fixed';
+                        if (fixed || node.closest && node.closest('[data-testid="lightbox"]')) {
+                            imgs = Array.from(node.querySelectorAll('img'));
+                        }
+                        // data-testid="lightbox" 내부 이미지
+                        if (!imgs.length) {
+                            var lb = node.querySelector('[data-testid="lightbox"]');
+                            if (lb) imgs = Array.from(lb.querySelectorAll('img'));
+                        }
+                    }
+                    imgs.forEach(function(img) {
+                        if (!img.src || img.src.indexOf('/thumbs/') === -1) return;
+                        var origSrc = thumbSrcToOriginalSrc(img.src);
+                        if (origSrc !== img.src) img.src = origSrc;
+                    });
+                });
+            });
+        }).observe(document.body, {childList: true, subtree: true});
     })();
 
     // ── Ctrl+Enter 단축키: 이미지/영상 생성 ──────────────────────────────
@@ -1104,7 +1221,8 @@ def build_ui() -> gr.Blocks:
                         ref_preview = gr.Gallery(
                             label="레퍼런스 미리보기 (썸네일 클릭 시 해당 이미지 삭제 🗑️)",
                             columns=2,
-                            height=420,
+                            height=300,
+                            object_fit="contain",
                             visible=False,
                         )
 
@@ -1138,7 +1256,7 @@ def build_ui() -> gr.Blocks:
 
                 # 결과 갤러리 (생성 탭 하단)
                 gr.Markdown("### 🖼️ 생성 결과")
-                gr.Markdown("💡 이미지 위에 마우스를 올리면 다운로드·영상 레퍼런스·이미지 레퍼런스 버튼이 나타납니다. 클릭하여 선택 후 아래 버튼을 사용할 수도 있습니다.")
+                gr.Markdown("💡 이미지 위에 마우스를 올리면 다운로드·영상 레퍼런스·이미지 레퍼런스 버튼이 나타납니다. 여러 장을 선택하려면 왼쪽 위 체크박스를 클릭하세요.")
                 live_gallery = gr.Gallery(
                     label="생성된 이미지",
                     columns=4,
@@ -1149,17 +1267,10 @@ def build_ui() -> gr.Blocks:
                 )
                 with gr.Row():
                     btn_refresh_gen = gr.Button("🔄 새로고침", variant="secondary", scale=1)
-                    gen_selected_info = gr.Textbox(
-                        label="선택된 이미지",
-                        value="이미지를 클릭하여 선택하세요",
-                        interactive=False,
-                        scale=3,
-                        visible=False,
-                    )
                     btn_download_single_gen = gr.Button(
-                        "📥 PNG 다운로드",
+                        "📥 다운로드 (단일 PNG / 다중 선택 시 ZIP)",
                         variant="secondary",
-                        scale=1,
+                        scale=2,
                         elem_id="btn-download-gen",
                     )
                     btn_make_video_gen = gr.Button(
@@ -1174,24 +1285,18 @@ def build_ui() -> gr.Blocks:
                         scale=1,
                         elem_id="btn-ref-gen",
                     )
-                    btn_download_selected_gen = gr.Button(
-                        "📦 선택 항목 ZIP",
-                        variant="secondary",
+                    btn_delete_gen = gr.Button(
+                        "🗑️ 선택 삭제",
+                        variant="stop",
                         scale=1,
                     )
                 single_png_output_gen = gr.File(label="PNG 다운로드", elem_id="single-png-gen")
+                selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gen")
                 ms_state_gen = gr.Textbox(
                     value="[]",
                     elem_id="ms-state-gen",
                     interactive=True,
                 )
-                btn_multi_select_gen = gr.Button(
-                    "✖️ 선택 초기화",
-                    variant="secondary",
-                    size="sm",
-                    elem_id="ms-toggle-gen",
-                )
-                selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gen")
 
                 # 오버레이 액션 트리거 (overlay 버튼 → 서버 핸들러 직접 연결용)
                 overlay_dl_gen = gr.Textbox(elem_id="overlay-dl-gen", interactive=True)
@@ -1223,12 +1328,13 @@ def build_ui() -> gr.Blocks:
                             if not p:
                                 continue
                             with Image.open(str(p)) as img:
-                                img.draft('RGB', (256, 256))
-                                img.thumbnail((256, 256), Image.LANCZOS)
+                                img.draft('RGB', (_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE))
+                                img.thumbnail((_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE), Image.LANCZOS)
                                 thumbs.append(img.convert("RGB").copy())
                         except Exception:
                             continue
-                    return gr.update(visible=bool(thumbs), value=thumbs)
+                    cols = 1 if len(thumbs) == 1 else 2
+                    return gr.update(visible=bool(thumbs), value=thumbs, columns=cols)
 
                 def on_add_ref_images(new_files, current_files):
                     """추가 업로드된 파일을 기존 레퍼런스 이미지 목록에 병합합니다."""
@@ -1275,12 +1381,13 @@ def build_ui() -> gr.Blocks:
                     for p in new_paths:
                         try:
                             with Image.open(str(p)) as img:
-                                img.draft('RGB', (256, 256))
-                                img.thumbnail((256, 256), Image.LANCZOS)
+                                img.draft('RGB', (_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE))
+                                img.thumbnail((_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE), Image.LANCZOS)
                                 thumbs.append(img.convert("RGB").copy())
                         except Exception:
                             continue
-                    return gr.update(value=new_paths), gr.update(visible=bool(thumbs), value=thumbs)
+                    cols = 1 if len(thumbs) == 1 else 2
+                    return gr.update(value=new_paths), gr.update(visible=bool(thumbs), value=thumbs, columns=cols)
 
                 model_radio.change(update_model_info, inputs=[model_radio], outputs=[model_info])
                 ref_image_upload.change(
@@ -1308,6 +1415,7 @@ def build_ui() -> gr.Blocks:
                 )
 
                 generate_fn = build_generate_fn(gallery_state)
+
                 btn_generate.click(
                     generate_fn,
                     inputs=[
@@ -1319,6 +1427,7 @@ def build_ui() -> gr.Blocks:
                         ref_image_upload,
                     ],
                     outputs=[live_gallery, gen_status],
+                    concurrency_limit=None,  # 여러 생성 작업 동시 큐 허용
                 ).then(
                     update_ref_visibility,
                     inputs=[ref_image_upload],
@@ -1326,14 +1435,16 @@ def build_ui() -> gr.Blocks:
                 )
 
                 def _load_ref_detail_images(item):
-                    """GalleryItem에서 레퍼런스 이미지를 고화질로 로드합니다."""
+                    """GalleryItem에서 레퍼런스 이미지를 미리보기 크기로 로드합니다."""
                     if item is None or not item.reference_image_paths:
                         return [], False
                     imgs = []
                     for rp in item.reference_image_paths:
                         try:
                             if os.path.exists(rp):
-                                imgs.append(Image.open(rp).convert("RGB"))
+                                img = Image.open(rp).convert("RGB")
+                                img.thumbnail((_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE), Image.LANCZOS)
+                                imgs.append(img)
                         except Exception:
                             continue
                     return imgs, bool(imgs)
@@ -1354,10 +1465,10 @@ def build_ui() -> gr.Blocks:
 
                 btn_refresh_gen.click(refresh_live_gallery, outputs=[live_gallery])
 
-                download_single_gen_fn = build_download_single_fn(gallery_state)
+                smart_download_gen_fn = build_smart_download_fn(gallery_state)
                 btn_download_single_gen.click(
-                    download_single_gen_fn,
-                    inputs=[selected_img_idx_gen],
+                    smart_download_gen_fn,
+                    inputs=[ms_state_gen, selected_img_idx_gen],
                     outputs=[single_png_output_gen],
                 )
 
@@ -1367,11 +1478,11 @@ def build_ui() -> gr.Blocks:
                     outputs=[ref_image_upload],
                 )
 
-                download_selected_gen_fn = build_download_selected_fn(gallery_state)
-                btn_download_selected_gen.click(
-                    download_selected_gen_fn,
-                    inputs=[ms_state_gen],
-                    outputs=[selected_zip_output_gen],
+                delete_gen_fn = build_delete_selected_fn(gallery_state)
+                btn_delete_gen.click(
+                    delete_gen_fn,
+                    inputs=[ms_state_gen, selected_img_idx_gen],
+                    outputs=[live_gallery, gen_status, ms_state_gen, selected_img_idx_gen],
                 )
 
                 # 오버레이 액션 핸들러 연결
@@ -1382,6 +1493,7 @@ def build_ui() -> gr.Blocks:
                     except Exception:
                         return -1
 
+                download_single_gen_fn = build_download_single_fn(gallery_state)
                 overlay_dl_gen.input(
                     lambda val: download_single_gen_fn(_parse_overlay_idx(val)),
                     inputs=[overlay_dl_gen],
@@ -1667,17 +1779,10 @@ def build_ui() -> gr.Blocks:
                 )
 
                 with gr.Row():
-                    gallery_selected_info = gr.Textbox(
-                        label="선택된 이미지",
-                        value="이미지를 클릭하여 선택하세요",
-                        interactive=False,
-                        scale=3,
-                        visible=False,
-                    )
                     btn_download_single_gallery = gr.Button(
-                        "📥 PNG 다운로드",
+                        "📥 다운로드 (단일 PNG / 다중 선택 시 ZIP)",
                         variant="secondary",
-                        scale=1,
+                        scale=2,
                         elem_id="btn-download-gallery",
                     )
                     btn_make_video_gallery = gr.Button(
@@ -1692,26 +1797,20 @@ def build_ui() -> gr.Blocks:
                         scale=1,
                         elem_id="btn-ref-gallery",
                     )
-                    btn_download_selected_gallery = gr.Button(
-                        "📦 선택 항목 ZIP",
-                        variant="secondary",
+                    btn_delete_gallery = gr.Button(
+                        "🗑️ 선택 삭제",
+                        variant="stop",
                         scale=1,
                     )
 
                 single_png_output_gallery = gr.File(label="PNG 다운로드", elem_id="single-png-gallery")
+                selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gallery")
                 zip_file_output = gr.File(label="ZIP 다운로드", elem_id="full-zip-gallery")
                 ms_state_gallery = gr.Textbox(
                     value="[]",
                     elem_id="ms-state-gallery",
                     interactive=True,
                 )
-                btn_multi_select_gallery = gr.Button(
-                    "✖️ 선택 초기화",
-                    variant="secondary",
-                    size="sm",
-                    elem_id="ms-toggle-gallery",
-                )
-                selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gallery")
 
                 # 오버레이 액션 트리거 (갤러리 탭)
                 overlay_dl_gallery = gr.Textbox(elem_id="overlay-dl-gallery", interactive=True)
@@ -1755,10 +1854,10 @@ def build_ui() -> gr.Blocks:
                     outputs=[selected_img_idx_gallery, detail_ref_gallery_full, detail_panel_gallery],
                 )
 
-                download_single_gallery_fn = build_download_single_fn(gallery_state)
+                smart_download_gallery_fn = build_smart_download_fn(gallery_state)
                 btn_download_single_gallery.click(
-                    download_single_gallery_fn,
-                    inputs=[selected_img_idx_gallery],
+                    smart_download_gallery_fn,
+                    inputs=[ms_state_gallery, selected_img_idx_gallery],
                     outputs=[single_png_output_gallery],
                 )
 
@@ -1768,13 +1867,14 @@ def build_ui() -> gr.Blocks:
                     outputs=[ref_image_upload],
                 )
 
-                download_selected_gallery_fn = build_download_selected_fn(gallery_state)
-                btn_download_selected_gallery.click(
-                    download_selected_gallery_fn,
-                    inputs=[ms_state_gallery],
-                    outputs=[selected_zip_output_gallery],
+                delete_gallery_fn = build_delete_selected_fn(gallery_state)
+                btn_delete_gallery.click(
+                    delete_gallery_fn,
+                    inputs=[ms_state_gallery, selected_img_idx_gallery],
+                    outputs=[full_gallery, gallery_status, ms_state_gallery, selected_img_idx_gallery],
                 )
 
+                download_single_gallery_fn = build_download_single_fn(gallery_state)
                 overlay_dl_gallery.input(
                     lambda val: download_single_gallery_fn(_parse_overlay_idx(val)),
                     inputs=[overlay_dl_gallery],
@@ -1794,7 +1894,12 @@ def build_ui() -> gr.Blocks:
             if item is None:
                 gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
                 return None, gr.update()
-            return item.image, gr.update(selected="tab_video")
+            # 원본 이미지를 디스크에서 로드 (item.image는 썸네일일 수 있음)
+            try:
+                img = Image.open(item.image_path).convert("RGB") if item.image_path and os.path.exists(item.image_path) else item.image
+            except Exception:
+                img = item.image
+            return img, gr.update(selected="tab_video")
 
         btn_make_video_gen.click(
             on_make_video,
