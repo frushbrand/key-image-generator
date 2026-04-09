@@ -733,6 +733,43 @@ def build_ui() -> gr.Blocks:
 
         return gr.update(value=current_paths + [item.image_path])
 
+    def _use_as_ref_selected(selected_json: str, current_files: list):
+        """체크박스로 선택된 이미지들을 레퍼런스 이미지 업로드 칸에 추가."""
+        try:
+            indices = json.loads(selected_json or "[]")
+        except (json.JSONDecodeError, ValueError):
+            indices = []
+        if not indices:
+            gr.Warning("레퍼런스로 추가할 이미지를 먼저 선택해주세요.")
+            return gr.update()
+        current_paths = []
+        if current_files:
+            current_paths = [f if isinstance(f, str) else f.path for f in current_files if f is not None]
+        new_paths = []
+        for raw_idx in indices:
+            try:
+                item = gallery_state.get_success_item_by_visual_index(int(raw_idx))
+                if item and item.image_path and os.path.exists(item.image_path):
+                    new_paths.append(item.image_path)
+            except (ValueError, TypeError):
+                continue
+        if not new_paths:
+            gr.Warning("선택된 이미지 파일을 찾을 수 없습니다.")
+            return gr.update()
+        combined = current_paths + new_paths
+        if len(combined) > MAX_REFERENCE_IMAGES:
+            gr.Warning(f"레퍼런스 이미지는 최대 {MAX_REFERENCE_IMAGES}장까지 추가할 수 있습니다.")
+            combined = combined[:MAX_REFERENCE_IMAGES]
+        return gr.update(value=combined)
+
+    def _use_as_ref_single(val: str, current_files: list):
+        """오버레이 버튼에서 단일 이미지를 레퍼런스로 추가 ('idx:timestamp' 값 처리)."""
+        try:
+            idx = int(val.split(":")[0])
+        except Exception:
+            idx = -1
+        return _use_as_ref(idx, current_files)
+
     # 탭 전환을 위한 JavaScript (localStorage로 새로고침 시 탭 유지)
     TAB_PERSIST_JS = """
     <script>
@@ -907,12 +944,14 @@ def build_ui() -> gr.Blocks:
             // 현재 호버 인덱스를 전역 변수에 저장 — Python 버튼의 js 프리프로세서가 읽음
             window.__ovIdx = curItemIdx;
             if (btn.dataset.k === 'dl') {
-                // 다운로드: 주 다운로드 버튼 클릭 → Python이 원본 이미지 경로 반환
-                gClick(curCfg.dl);
+                // 오버레이 다운로드: 해당 이미지의 원본 PNG 직접 다운로드 (Python 불필요)
+                downloadFromGallery(curCfg.id, curItemIdx);
             } else if (btn.dataset.k === 'vid') {
-                gClick(curCfg.vid);
+                // 오버레이 영상화: overlay textbox를 통해 Python 핸들러 호출 (개별 이미지 기준)
+                triggerOverlayAction(curCfg.id, 'vid', curItemIdx);
             } else if (btn.dataset.k === 'ref') {
-                gClick(curCfg.ref);
+                // 오버레이 레퍼런스: overlay textbox를 통해 Python 핸들러 호출 (개별 이미지 기준)
+                triggerOverlayAction(curCfg.id, 'ref', curItemIdx);
             }
         });
         window.addEventListener('scroll', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); }, true);
@@ -941,6 +980,16 @@ def build_ui() -> gr.Blocks:
         window.__msToggle = function(gid, idx) {
             if (!sels[gid]) return;
             if (sels[gid].has(idx)) sels[gid].delete(idx); else sels[gid].add(idx);
+            refreshOverlays(gid); syncTextbox(gid);
+        };
+        window.__msToggleAll = function(gid) {
+            if (!sels[gid]) return;
+            if (sels[gid].size > 0) {
+                sels[gid].clear();
+            } else {
+                var items = getItems(gid);
+                for (var i = 0; i < items.length; i++) { sels[gid].add(i); }
+            }
             refreshOverlays(gid); syncTextbox(gid);
         };
 
@@ -1070,17 +1119,15 @@ def build_ui() -> gr.Blocks:
     })();
 
     // ── 이미지 생성 버튼 항상 활성 유지 (큐 연속 추가 허용) ─────────────────
+    // Gradio 5가 버튼을 Svelte로 재렌더링하면 MutationObserver가 새 요소를 놓칠 수 있으므로
+    // setInterval로 주기적으로 disabled 속성을 제거하는 방식으로 교체
     (function() {
         function keepBtnEnabled(id) {
-            var att = 0;
-            (function t() {
+            setInterval(function() {
                 var w = document.getElementById(id);
                 var b = w ? (w.tagName === 'BUTTON' ? w : w.querySelector('button')) : null;
-                if (!b) { if (++att < 40) setTimeout(t, 300); return; }
-                new MutationObserver(function() {
-                    if (b.disabled) b.removeAttribute('disabled');
-                }).observe(b, {attributes: true, attributeFilter: ['disabled']});
-            })();
+                if (b && b.disabled) b.removeAttribute('disabled');
+            }, 200);
         }
         keepBtnEnabled('image-generate-btn');
     })();
@@ -1358,16 +1405,9 @@ def build_ui() -> gr.Blocks:
                 # 결과 갤러리 (생성 탭 하단)
                 gr.Markdown("### 🖼️ 생성 결과")
                 gr.Markdown("💡 이미지 위에 마우스를 올리면 다운로드·영상 레퍼런스·이미지 레퍼런스 버튼이 나타납니다. 여러 장을 선택하려면 왼쪽 위 체크박스를 클릭하세요.")
-                live_gallery = gr.Gallery(
-                    label="생성된 이미지",
-                    columns=4,
-                    height=1050,
-                    object_fit="contain",
-                    value=gallery_state.to_gradio_gallery(),
-                    elem_id="live-gallery",
-                )
                 with gr.Row():
                     btn_refresh_gen = gr.Button("🔄 새로고침", variant="secondary", scale=1)
+                    btn_select_all_gen = gr.Button("☑️ 전체 선택/해제", variant="secondary", scale=1)
                     btn_download_single_gen = gr.Button(
                         "📥 다운로드 (단일 PNG / 다중 선택 시 ZIP)",
                         variant="secondary",
@@ -1391,6 +1431,14 @@ def build_ui() -> gr.Blocks:
                         variant="stop",
                         scale=1,
                     )
+                live_gallery = gr.Gallery(
+                    label="생성된 이미지",
+                    columns=4,
+                    height=1050,
+                    object_fit="contain",
+                    value=gallery_state.to_gradio_gallery(),
+                    elem_id="live-gallery",
+                )
                 single_png_output_gen = gr.File(label="PNG 다운로드", elem_id="single-png-gen")
                 selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gen")
                 ms_state_gen = gr.Textbox(
@@ -1576,10 +1624,10 @@ def build_ui() -> gr.Blocks:
                 )
 
                 btn_use_as_ref_gen.click(
-                    _use_as_ref,
-                    inputs=[selected_img_idx_gen, ref_image_upload],
+                    _use_as_ref_selected,
+                    inputs=[ms_state_gen, ref_image_upload],
                     outputs=[ref_image_upload],
-                    js="(idx, files) => [window.__getOvIdx(idx), files]",
+                    js="(ms, files) => [window.__getSelJson('live-gallery', ms), files]",
                 )
 
                 delete_gen_fn = build_delete_selected_fn(gallery_state)
@@ -1590,6 +1638,11 @@ def build_ui() -> gr.Blocks:
                     js="(ms, idx) => [window.__getSelJson('live-gallery', ms), idx]",
                 )
 
+                btn_select_all_gen.click(
+                    fn=None,
+                    js="() => { if (window.__msToggleAll) window.__msToggleAll('live-gallery'); }",
+                )
+
                 # 오버레이 액션 핸들러 연결
                 def _parse_overlay_idx(val: str) -> int:
                     """'idx:timestamp' 형식 또는 단순 숫자에서 인덱스 추출"""
@@ -1598,8 +1651,9 @@ def build_ui() -> gr.Blocks:
                     except Exception:
                         return -1
 
-                # overlay_dl_gen / overlay_ref_gen 은 오버레이 버튼이 직접 주 버튼을 클릭하도록
-                # 변경되었으므로 별도 .input 핸들러가 필요 없음
+                # overlay_dl_gen 은 JS가 직접 downloadFromGallery()로 처리 (Python 불필요)
+                # overlay_vid_gen / overlay_ref_gen 은 triggerOverlayAction → Python 핸들러 필요
+                # (핸들러는 ref_image_vid 정의 후 탭 블록 외부에서 등록)
 
             # ── 탭 3: 영상 생성 (Kling) ──────────────────────────────────────
             with gr.Tab("🎬 영상 생성 (Kling)", id="tab_video"):
@@ -1865,16 +1919,8 @@ def build_ui() -> gr.Blocks:
                     interactive=False,
                 )
 
-                full_gallery = gr.Gallery(
-                    label="전체 갤러리",
-                    columns=4,
-                    height=900,
-                    object_fit="contain",
-                    value=gallery_state.to_gradio_gallery(),
-                    elem_id="full-gallery",
-                )
-
                 with gr.Row():
+                    btn_select_all_gallery = gr.Button("☑️ 전체 선택/해제", variant="secondary", scale=1)
                     btn_download_single_gallery = gr.Button(
                         "📥 다운로드 (단일 PNG / 다중 선택 시 ZIP)",
                         variant="secondary",
@@ -1898,6 +1944,15 @@ def build_ui() -> gr.Blocks:
                         variant="stop",
                         scale=1,
                     )
+
+                full_gallery = gr.Gallery(
+                    label="전체 갤러리",
+                    columns=4,
+                    height=900,
+                    object_fit="contain",
+                    value=gallery_state.to_gradio_gallery(),
+                    elem_id="full-gallery",
+                )
 
                 single_png_output_gallery = gr.File(label="PNG 다운로드", elem_id="single-png-gallery")
                 selected_zip_output_gallery = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gallery")
@@ -1960,10 +2015,10 @@ def build_ui() -> gr.Blocks:
                 )
 
                 btn_use_as_ref_gallery.click(
-                    _use_as_ref,
-                    inputs=[selected_img_idx_gallery, ref_image_upload],
+                    _use_as_ref_selected,
+                    inputs=[ms_state_gallery, ref_image_upload],
                     outputs=[ref_image_upload],
-                    js="(idx, files) => [window.__getOvIdx(idx), files]",
+                    js="(ms, files) => [window.__getSelJson('full-gallery', ms), files]",
                 )
 
                 delete_gallery_fn = build_delete_selected_fn(gallery_state)
@@ -1974,40 +2029,93 @@ def build_ui() -> gr.Blocks:
                     js="(ms, idx) => [window.__getSelJson('full-gallery', ms), idx]",
                 )
 
-                # overlay_dl_gallery / overlay_ref_gallery 은 오버레이 버튼이 직접 주 버튼을 클릭하도록
-                # 변경되었으므로 별도 .input 핸들러가 필요 없음
+                btn_select_all_gallery.click(
+                    fn=None,
+                    js="() => { if (window.__msToggleAll) window.__msToggleAll('full-gallery'); }",
+                )
+
+                # overlay_dl_gallery 는 JS가 직접 downloadFromGallery()로 처리 (Python 불필요)
+                # overlay_vid_gallery / overlay_ref_gallery 는 탭 블록 외부에서 핸들러 등록
 
         # ── 탭 간 "영상화" 버튼 공통 핸들러 ─────────────────────────────────
 
-        def on_make_video(idx: int):
-            """선택된 이미지를 영상 생성 탭으로 전송합니다."""
+        def _load_image_for_video(item: Optional[GalleryItem]) -> Optional[Image.Image]:
+            """GalleryItem에서 원본 이미지를 로드합니다."""
+            if item is None:
+                return None
+            try:
+                if item.image_path and os.path.exists(item.image_path):
+                    return Image.open(item.image_path).convert("RGB")
+            except Exception:
+                pass
+            return item.image
+
+        def on_make_video_selected(selected_json: str, fallback_idx: int):
+            """체크박스로 선택된 첫 번째 이미지를 영상 생성 탭으로 전송합니다."""
+            try:
+                indices = json.loads(selected_json or "[]")
+            except (json.JSONDecodeError, ValueError):
+                indices = []
+            idx = int(indices[0]) if indices else fallback_idx
+            item = gallery_state.get_success_item_by_visual_index(idx)
+            if item is None:
+                gr.Warning("이미지를 먼저 선택해주세요.")
+                return None, gr.update()
+            img = _load_image_for_video(item)
+            return img, gr.update(selected="tab_video")
+
+        def on_make_video_single(val: str):
+            """오버레이 영상화 버튼: 단일 이미지를 영상 생성 탭으로 전송합니다."""
+            try:
+                idx = int(val.split(":")[0])
+            except Exception:
+                idx = -1
             item = gallery_state.get_success_item_by_visual_index(idx)
             if item is None:
                 gr.Warning("이미지를 먼저 클릭하여 선택해주세요.")
                 return None, gr.update()
-            # 원본 이미지를 디스크에서 로드 (item.image는 썸네일일 수 있음)
-            try:
-                img = Image.open(item.image_path).convert("RGB") if item.image_path and os.path.exists(item.image_path) else item.image
-            except Exception:
-                img = item.image
+            img = _load_image_for_video(item)
             return img, gr.update(selected="tab_video")
 
         btn_make_video_gen.click(
-            on_make_video,
-            inputs=[selected_img_idx_gen],
+            on_make_video_selected,
+            inputs=[ms_state_gen, selected_img_idx_gen],
             outputs=[ref_image_vid, main_tabs],
-            js="(idx) => [window.__getOvIdx(idx)]",
+            js="(ms, idx) => [window.__getSelJson('live-gallery', ms), idx]",
         )
 
         btn_make_video_gallery.click(
-            on_make_video,
-            inputs=[selected_img_idx_gallery],
+            on_make_video_selected,
+            inputs=[ms_state_gallery, selected_img_idx_gallery],
             outputs=[ref_image_vid, main_tabs],
-            js="(idx) => [window.__getOvIdx(idx)]",
+            js="(ms, idx) => [window.__getSelJson('full-gallery', ms), idx]",
         )
 
-        # overlay_vid_gen / overlay_vid_gallery 은 오버레이 버튼이 직접 주 버튼을 클릭하도록
-        # 변경되었으므로 별도 .input 핸들러가 필요 없음
+        # 오버레이 영상화 버튼 핸들러 (개별 이미지 기준, triggerOverlayAction 경유)
+        overlay_vid_gen.input(
+            on_make_video_single,
+            inputs=[overlay_vid_gen],
+            outputs=[ref_image_vid, main_tabs],
+        )
+
+        overlay_vid_gallery.input(
+            on_make_video_single,
+            inputs=[overlay_vid_gallery],
+            outputs=[ref_image_vid, main_tabs],
+        )
+
+        # 오버레이 레퍼런스 버튼 핸들러 (개별 이미지 기준, triggerOverlayAction 경유)
+        overlay_ref_gen.input(
+            _use_as_ref_single,
+            inputs=[overlay_ref_gen, ref_image_upload],
+            outputs=[ref_image_upload],
+        )
+
+        overlay_ref_gallery.input(
+            _use_as_ref_single,
+            inputs=[overlay_ref_gallery, ref_image_upload],
+            outputs=[ref_image_upload],
+        )
 
         gr.Markdown(
             """
