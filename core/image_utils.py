@@ -14,6 +14,28 @@ from PIL import Image
 
 from config.settings import OUTPUT_BASE_DIR, ASPECT_RATIOS, QUALITY_OPTIONS
 
+# 갤러리 표시용 썸네일 최대 크기 (픽셀)
+THUMBNAIL_SIZE = 512
+
+
+def get_thumbnail_path(image_path: str) -> str:
+    """원본 이미지 경로로부터 썸네일 파일 경로를 계산합니다.
+    썸네일은 원본과 같은 날짜 디렉토리 내 thumbs/ 서브폴더에 저장됩니다."""
+    p = Path(image_path)
+    thumb_dir = p.parent / "thumbs"
+    return str(thumb_dir / p.name)
+
+
+def create_thumbnail(image_path: str) -> str:
+    """원본 이미지를 512px 썸네일로 변환하여 thumbs/ 폴더에 저장하고 경로를 반환합니다."""
+    thumb_path = get_thumbnail_path(image_path)
+    Path(thumb_path).parent.mkdir(parents=True, exist_ok=True)
+    with Image.open(image_path) as img:
+        img = img.convert("RGB")
+        img.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE), Image.LANCZOS)
+        img.save(thumb_path, format="PNG")
+    return thumb_path
+
 
 def resize_reference_image(image: Image.Image, max_size: int = 1024) -> Image.Image:
     """레퍼런스 이미지를 최대 크기 이내로 리사이즈합니다."""
@@ -74,6 +96,12 @@ def save_image(
 
     image.save(str(img_path), format="PNG")
 
+    # 갤러리 표시용 썸네일 생성
+    try:
+        thumb_path = create_thumbnail(str(img_path))
+    except Exception:
+        thumb_path = str(img_path)
+
     metadata = {
         "timestamp": datetime.now().isoformat(),
         "model": model_name,
@@ -87,7 +115,7 @@ def save_image(
     with open(str(meta_path), "w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
 
-    return str(img_path), str(meta_path)
+    return str(img_path), str(meta_path), thumb_path
 
 
 def create_zip_from_paths(image_paths: list[str]) -> Optional[str]:
@@ -176,11 +204,18 @@ def load_existing_outputs() -> list[dict]:
                 meta: dict = {}
                 if meta_path.exists():
                     meta = load_metadata(str(meta_path))
-                img = Image.open(str(img_path)).convert("RGB")
+                # 썸네일 생성 (없으면 새로 만들고, 이미 있으면 그대로 사용)
+                thumb_path = get_thumbnail_path(str(img_path))
+                if not Path(thumb_path).exists():
+                    try:
+                        thumb_path = create_thumbnail(str(img_path))
+                    except Exception:
+                        thumb_path = str(img_path)
                 items.append(
                     {
-                        "image": img,
+                        "image": None,
                         "image_path": str(img_path),
+                        "thumbnail_path": thumb_path,
                         "model": meta.get("model", ""),
                         "ratio": meta.get("ratio", ""),
                         "quality": meta.get("quality", ""),
