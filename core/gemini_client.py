@@ -209,23 +209,28 @@ def generate_single_image(
     reference_images: Optional[list[Image.Image]] = None,
 ) -> Image.Image:
     """단일 이미지를 생성합니다. 실패 시 최대 MAX_RETRY회 재시도합니다."""
+    from core.generation_stats import record_image_generation
+
     last_error = None
     for attempt in range(1, MAX_RETRY + 1):
         try:
+            _start = time.time()
             if model_name == "나노 바나나 2":
-                return generate_with_nano_banana_2(
+                result = generate_with_nano_banana_2(
                     api_key, prompt, ratio, quality, reference_images
                 )
             elif model_name == "나노 바나나 프로":
-                return generate_with_nano_banana_pro(
+                result = generate_with_nano_banana_pro(
                     api_key, prompt, ratio, quality, reference_images
                 )
             elif model_name == "나노 바나나":
-                return generate_with_nano_banana(
+                result = generate_with_nano_banana(
                     api_key, prompt, ratio, quality, reference_images
                 )
             else:
                 raise ValueError(f"알 수 없는 모델: {model_name}")
+            record_image_generation(model_name, time.time() - _start)
+            return result
         except Exception as e:
             last_error = e
             if attempt < MAX_RETRY:
