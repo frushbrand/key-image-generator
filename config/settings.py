@@ -1,8 +1,9 @@
-# 화질 설정 (해상도 기준 표기, 16:9 기준 참고 해상도)
+# 화질 설정 (Gemini API image_size 값 기준)
 QUALITY_OPTIONS = {
-    "720p": {"width_multiplier": 1.0, "description": "1408×792 (16:9 기준)", "api_image_size": "1K"},
-    "1080p": {"width_multiplier": 1.5, "description": "2112×1188 (16:9 기준)", "api_image_size": "2K"},
-    "2K": {"width_multiplier": 2.0, "description": "2816×1584 (16:9 기준)", "api_image_size": "4K"},
+    "512": {"api_image_size": "512"},
+    "1K":  {"api_image_size": "1K"},
+    "2K":  {"api_image_size": "2K"},
+    "4K":  {"api_image_size": "4K"},
 }
 
 # 화면 비율 설정 (width, height 기준 픽셀, 나노 바나나 2 기준)
@@ -70,7 +71,7 @@ KLING_DEFAULT_RATIO = "16:9"
 
 DEFAULT_MODEL = "나노 바나나 2"
 DEFAULT_RATIO = "16:9"
-DEFAULT_QUALITY = "1080p"
+DEFAULT_QUALITY = "2K"
 DEFAULT_COUNT = 1
 MAX_COUNT = 20
 MAX_REFERENCE_IMAGES = 10

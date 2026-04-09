@@ -47,7 +47,7 @@ def validate_api_key(api_key: str) -> tuple[bool, str]:
 
 def _get_image_config(ratio: str, quality: str) -> types.ImageConfig:
     """비율과 화질로 Gemini API ImageConfig를 생성합니다."""
-    image_size = QUALITY_OPTIONS.get(quality, {}).get("api_image_size", "2K")
+    image_size = QUALITY_OPTIONS.get(quality, {}).get("api_image_size", quality)
     return types.ImageConfig(
         aspect_ratio=ratio,
         image_size=image_size,
