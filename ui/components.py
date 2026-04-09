@@ -1307,11 +1307,6 @@ def build_ui() -> gr.Blocks:
                     inputs=[overlay_dl_gen],
                     outputs=[single_png_output_gen],
                 )
-                overlay_vid_gen.input(
-                    lambda val: on_make_video(_parse_overlay_idx(val)),
-                    inputs=[overlay_vid_gen],
-                    outputs=[ref_image_vid, main_tabs],
-                )
                 overlay_ref_gen.input(
                     lambda val, files: _use_as_ref(_parse_overlay_idx(val), files),
                     inputs=[overlay_ref_gen, ref_image_upload],
@@ -1707,11 +1702,6 @@ def build_ui() -> gr.Blocks:
                     inputs=[overlay_dl_gallery],
                     outputs=[single_png_output_gallery],
                 )
-                overlay_vid_gallery.input(
-                    lambda val: on_make_video(_parse_overlay_idx(val)),
-                    inputs=[overlay_vid_gallery],
-                    outputs=[ref_image_vid, main_tabs],
-                )
                 overlay_ref_gallery.input(
                     lambda val, files: _use_as_ref(_parse_overlay_idx(val), files),
                     inputs=[overlay_ref_gallery, ref_image_upload],
@@ -1737,6 +1727,18 @@ def build_ui() -> gr.Blocks:
         btn_make_video_gallery.click(
             on_make_video,
             inputs=[selected_img_idx_gallery],
+            outputs=[ref_image_vid, main_tabs],
+        )
+
+        overlay_vid_gen.input(
+            lambda val: on_make_video(_parse_overlay_idx(val)),
+            inputs=[overlay_vid_gen],
+            outputs=[ref_image_vid, main_tabs],
+        )
+
+        overlay_vid_gallery.input(
+            lambda val: on_make_video(_parse_overlay_idx(val)),
+            inputs=[overlay_vid_gallery],
             outputs=[ref_image_vid, main_tabs],
         )
 
