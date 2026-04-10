@@ -903,9 +903,8 @@ def build_ui() -> gr.Blocks:
             // 현재 호버 인덱스를 전역 변수에 저장 — Python 버튼의 js 프리프로세서가 읽음
             window.__ovIdx = curItemIdx;
             if (btn.dataset.k === 'dl') {
-                // 오버레이 다운로드: Python 서버 핸들러 경유로 원본 사이즈 PNG 다운로드
-                triggerOverlayAction(curCfg.id, 'dl', curItemIdx);
-                window.__ovIdx = -1;
+                // 오버레이 다운로드: 신뢰 이벤트(click)를 통해 전역 버튼 트리거 (isTrusted 보장)
+                gClick(curCfg.dl);
             } else if (btn.dataset.k === 'vid') {
                 // 오버레이 영상화: 신뢰 이벤트(click)를 통해 전역 버튼 트리거 (isTrusted 보장)
                 gClick(curCfg.vid);
@@ -1084,14 +1083,14 @@ def build_ui() -> gr.Blocks:
             var lb = document.querySelector('[data-testid="lightbox"]')
                   || document.querySelector('.lightbox');
             if (!lb) return;
-            // 클릭 대상이 이미지·버튼·캡션이 아닌 라이트박스 내부 배경 영역이면 닫기
-            if (lb.contains(e.target)
-                && !e.target.closest('img')
+            // 클릭 대상이 이미지·버튼·캡션이 아니면 닫기
+            // 배경(backdrop)이 lb 외부 별도 요소일 수 있으므로 lb.contains 검사 제거
+            if (!e.target.closest('img')
                 && !e.target.closest('button')
                 && !e.target.closest('[data-testid="caption"]')
                 && !e.target.closest('.caption')
                 && !e.target.closest('[class*="caption"]')) {
-                var closeBtn = lb.querySelector('button:last-child');
+                var closeBtn = Array.from(lb.querySelectorAll('button')).pop();
                 if (closeBtn) closeBtn.click();
             }
         }, true);
@@ -1679,7 +1678,7 @@ def build_ui() -> gr.Blocks:
                     smart_download_gen_fn,
                     inputs=[ms_state_gen, selected_img_idx_gen],
                     outputs=[single_png_output_gen],
-                    js="(ms, idx) => { var oi = window.__getOvIdx(idx); return [window.__getSelJson('live-gallery', ms), oi]; }",
+                    js="(ms, idx) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : idx; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), oi] : [window.__getSelJson('live-gallery', ms), oi]; }",
                 )
 
                 btn_use_as_ref_gen.click(
@@ -2070,7 +2069,7 @@ def build_ui() -> gr.Blocks:
                     smart_download_gallery_fn,
                     inputs=[ms_state_gallery, selected_img_idx_gallery],
                     outputs=[single_png_output_gallery],
-                    js="(ms, idx) => { var oi = window.__getOvIdx(idx); return [window.__getSelJson('full-gallery', ms), oi]; }",
+                    js="(ms, idx) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : idx; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), oi] : [window.__getSelJson('full-gallery', ms), oi]; }",
                 )
 
                 btn_use_as_ref_gallery.click(
