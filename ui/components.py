@@ -68,16 +68,6 @@ APP_CSS = """
         .subtitle-text { color: #666; margin-bottom: 1rem; }
         .generate-btn { background: #4f46e5 !important; color: white !important; font-size: 1.1rem !important; }
 
-        /* 이미지 생성 버튼: 큐 작업 중에도 항상 활성 상태로 보이도록 */
-        #image-generate-btn button:disabled,
-        #image-generate-btn button[disabled] {
-            opacity: 1 !important;
-            cursor: pointer !important;
-            background: #4f46e5 !important;
-            color: white !important;
-            filter: none !important;
-        }
-
         /* 라이트박스: 닫기(X) 버튼만 표시, 나머지 모두 숨김 */
         .lightbox button,
         [data-testid="lightbox"] button {
@@ -210,9 +200,6 @@ APP_CSS = """
 
 # 레퍼런스 이미지 미리보기 썸네일 크기 (픽셀)
 _REF_THUMBNAIL_SIZE = 256
-
-# 이미지 생성 큐 결과 대기 타임아웃 (초)
-_GENERATE_TIMEOUT_SECONDS = 600
 
 # ── 경로 안전 검사 ──────────────────────────────────────────────────────────
 
@@ -432,7 +419,7 @@ def build_unified_video_fn(gallery_state: GalleryState):
 
 
 def build_generate_fn(gallery_state: GalleryState):
-    """생성 버튼 클릭 핸들러 팩토리 (제너레이터 방식: 이미지 완성 즉시 갤러리 업데이트)"""
+    """생성 버튼 클릭 핸들러 팩토리 (즉시 반환 후 백그라운드 스레드로 병렬 생성)"""
 
     def generate(
         model_name: str,
@@ -442,21 +429,17 @@ def build_generate_fn(gallery_state: GalleryState):
         count: int,
         ref_images,          # Gradio File 컴포넌트 값 (list of paths or None)
     ):
-        import queue as _queue
         import threading as _threading
-        import time as _time
 
         cfg = load_settings()
         api_key = cfg.get("api_key", "")
         if not api_key or not api_key.strip():
             gr.Warning("API 키 설정 탭에서 Google API 키를 먼저 저장해주세요.")
-            yield gallery_state.to_gradio_gallery(), gallery_state.get_summary()
-            return
+            return gallery_state.to_gradio_gallery(), gallery_state.get_summary()
 
         if not prompt or not prompt.strip():
             gr.Warning("프롬프트를 입력해주세요.")
-            yield gallery_state.to_gradio_gallery(), gallery_state.get_summary()
-            return
+            return gallery_state.to_gradio_gallery(), gallery_state.get_summary()
 
         count = max(1, min(int(count), MAX_COUNT))
 
@@ -473,19 +456,22 @@ def build_generate_fn(gallery_state: GalleryState):
             count, model_name, ratio, quality, prompt
         )
 
-        # ② 갤러리를 즉시 업데이트 (플레이스홀더 표시)
-        yield gallery_state.to_gradio_gallery(), f"⏳ {count}장 생성 시작..."
-
-        # ③ 완료 결과를 주고받는 큐
-        result_queue: _queue.Queue = _queue.Queue()
-
-        def on_progress(idx: int, img, err):
-            result_queue.put((idx, img, err))
-
-        start_time = _time.time()
-
-        # ④ 백그라운드 스레드에서 실제 이미지 생성
+        # ② 백그라운드 스레드에서 실제 이미지 생성 및 갤러리 상태 업데이트
         def run_generation():
+            def on_progress(idx: int, img, err):
+                gallery_index = allocated_indices[idx]
+                if img is not None:
+                    try:
+                        img_path, _, thumb_path = save_image(
+                            img, model_name, ratio, prompt, quality,
+                            reference_image_paths=ref_paths,
+                        )
+                        gallery_state.fill_pending_item(gallery_index, img_path, thumb_path, "success")
+                    except Exception as e:
+                        gallery_state.fill_pending_item(gallery_index, "", "", "failed", str(e))
+                else:
+                    gallery_state.fill_pending_item(gallery_index, "", "", "failed", err)
+
             try:
                 generate_batch_images(
                     api_key=api_key.strip(),
@@ -497,53 +483,14 @@ def build_generate_fn(gallery_state: GalleryState):
                     reference_images=ref_pil_images if ref_pil_images else None,
                     progress_callback=on_progress,
                 )
-            finally:
-                result_queue.put(None)  # 완료 센티널
+            except Exception as e:
+                gallery_state.fail_remaining_pending(allocated_indices, str(e))
 
         gen_thread = _threading.Thread(target=run_generation, daemon=True)
         gen_thread.start()
 
-        # ⑤ 결과가 도착할 때마다 해당 슬롯을 채우고 갤러리를 즉시 업데이트
-        finished = 0
-        failed_errors: list[str] = []
-
-        while finished < count:
-            try:
-                result = result_queue.get(timeout=_GENERATE_TIMEOUT_SECONDS)
-            except _queue.Empty:
-                break
-
-            if result is None:
-                break
-
-            idx, img, err = result
-            gallery_index = allocated_indices[idx]
-
-            if img is not None:
-                img_path, _, thumb_path = save_image(
-                    img, model_name, ratio, prompt, quality,
-                    reference_image_paths=ref_paths,
-                )
-                gallery_state.fill_pending_item(gallery_index, img_path, thumb_path, "success")
-            else:
-                gallery_state.fill_pending_item(gallery_index, "", "", "failed", err)
-                failed_errors.append(f"  • #{gallery_index + 1}: {err}")
-
-            finished += 1
-            elapsed = int(_time.time() - start_time)
-            yield (
-                gallery_state.to_gradio_gallery(),
-                f"⏳ 생성 중... {finished}/{count}장 완료 | ⏱️ {elapsed}초",
-            )
-
-        gen_thread.join(timeout=1)
-
-        elapsed_total = int(_time.time() - start_time)
-        status_msg = gallery_state.get_summary() + f" (⏱️ {elapsed_total}초 소요)"
-        if failed_errors:
-            status_msg += "\n\n❌ 실패 원인:\n" + "\n".join(failed_errors)
-
-        yield gallery_state.to_gradio_gallery(), status_msg
+        # ③ 즉시 반환 — gr.Timer 가 주기적으로 갤러리를 갱신함
+        return gallery_state.to_gradio_gallery(), f"⏳ {count}장 생성 시작..."
 
     return generate
 
@@ -1131,59 +1078,6 @@ def build_ui() -> gr.Blocks:
         }, true);
     })();
 
-    // ── 이미지 생성 버튼 항상 클릭 가능 유지 (큐 연속 추가 허용) ──────────────
-    // 3중 방어:
-    //   ① 100ms 폴링: Svelte 재렌더 후 disabled 즉시 제거
-    //   ② MutationObserver (동기): disabled 설정 즉시(rAF 없이) 제거
-    //   ③ pointerdown 인터셉터: disabled 버튼은 click 이벤트를 발생시키지 않으므로
-    //      (이것이 기존 click 인터셉터가 작동하지 않았던 근본 원인)
-    //      pointerdown 단계에서 disabled를 제거하고 명시적으로 click을 재발행
-    (function() {
-        function keepBtnClickable(id) {
-            function getBtn() {
-                var w = document.getElementById(id);
-                return w ? (w.tagName === 'BUTTON' ? w : w.querySelector('button')) : null;
-            }
-            function forceEnable() {
-                var b = getBtn();
-                if (b && b.disabled) { b.disabled = false; b.removeAttribute('disabled'); }
-            }
-
-            // ① 100ms 폴링 (Svelte 재렌더 후 신규 요소에도 적용)
-            setInterval(forceEnable, 100);
-
-            // ② MutationObserver: 동기적으로 disabled 설정 즉시 제거 (rAF 없이)
-            (function setupObs() {
-                var w = document.getElementById(id);
-                if (!w) { setTimeout(setupObs, 300); return; }
-                new MutationObserver(forceEnable)
-                    .observe(w, {attributes: true, subtree: true, childList: true});
-            })();
-
-            // ③ pointerdown 인터셉터: disabled 버튼은 click 이벤트를 발생시키지 않으므로
-            //    (이것이 기존 click 인터셉터가 작동하지 않았던 근본 원인)
-            //    pointerdown(disabled 버튼에서도 항상 발생) 단계에서 disabled를 제거하고
-            //    setTimeout으로 명시적인 click을 재발행 (중복 클릭 방지 플래그 포함)
-            (function setupPointerIntercept() {
-                var w = document.getElementById(id);
-                if (!w) { setTimeout(setupPointerIntercept, 300); return; }
-                var _pending = false;
-                w.addEventListener('pointerdown', function(e) {
-                    var b = getBtn();
-                    if (b && b.disabled) {
-                        b.removeAttribute('disabled');
-                        b.disabled = false;
-                        if (!_pending) {
-                            _pending = true;
-                            setTimeout(function() { _pending = false; var bb = getBtn(); if (bb) bb.click(); }, 10);
-                        }
-                    }
-                }, true); // capture phase
-            })();
-        }
-        keepBtnClickable('image-generate-btn');
-    })();
-
     // ── 라이트박스: 이미지 외부 영역 클릭 시 자동 닫기 ──────────────────────
     (function() {
         document.addEventListener('click', function(e) {
@@ -1593,6 +1487,8 @@ def build_ui() -> gr.Blocks:
                     value=gallery_state.to_gradio_gallery(),
                     elem_id="live-gallery",
                 )
+                # 1.5초마다 갤러리 상태를 자동 갱신 (병렬 생성 진행 중 실시간 반영)
+                gen_timer = gr.Timer(value=1.5, active=True)
                 single_png_output_gen = gr.File(label="PNG 다운로드", elem_id="single-png-gen")
                 selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gen")
                 ms_state_gen = gr.Textbox(
@@ -1731,12 +1627,18 @@ def build_ui() -> gr.Blocks:
                         ref_image_upload,
                     ],
                     outputs=[live_gallery, gen_status],
-                    concurrency_limit=None,  # 여러 생성 작업 동시 큐 허용
+                    concurrency_limit=None,
                 ).then(
                     update_ref_visibility,
                     inputs=[ref_image_upload],
                     outputs=[ref_preview],
                 )
+
+                # 타이머 갱신: 백그라운드 생성이 진행되는 동안 갤러리와 상태를 자동으로 업데이트
+                def poll_gallery_state():
+                    return gallery_state.to_gradio_gallery(), gallery_state.get_summary()
+
+                gen_timer.tick(poll_gallery_state, outputs=[live_gallery, gen_status])
 
                 def _load_ref_detail_images(item):
                     """GalleryItem에서 레퍼런스 이미지를 상세 패널용 크기로 로드합니다."""
