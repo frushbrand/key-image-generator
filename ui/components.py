@@ -956,8 +956,8 @@ def build_ui() -> gr.Blocks:
             // 현재 호버 인덱스를 전역 변수에 저장 — Python 버튼의 js 프리프로세서가 읽음
             window.__ovIdx = curItemIdx;
             if (btn.dataset.k === 'dl') {
-                // 오버레이 다운로드: 해당 이미지의 원본 PNG 직접 다운로드 (Python 불필요)
-                downloadFromGallery(curCfg.id, curItemIdx);
+                // 오버레이 다운로드: Python 서버 핸들러 경유로 원본 사이즈 PNG 다운로드
+                triggerOverlayAction(curCfg.id, 'dl', curItemIdx);
                 window.__ovIdx = -1;
             } else if (btn.dataset.k === 'vid') {
                 // 오버레이 영상화: 신뢰 이벤트(click)를 통해 전역 버튼 트리거 (isTrusted 보장)
@@ -1135,8 +1135,9 @@ def build_ui() -> gr.Blocks:
     // 3중 방어:
     //   ① 100ms 폴링: Svelte 재렌더 후 disabled 즉시 제거
     //   ② MutationObserver (동기): disabled 설정 즉시(rAF 없이) 제거
-    //   ③ 캡처 클릭 인터셉터: 사용자가 disabled 상태인 버튼을 클릭해도
-    //      wrapper 레벨에서 잡아 disabled 제거 후 클릭을 다시 발행
+    //   ③ pointerdown 인터셉터: disabled 버튼은 click 이벤트를 발생시키지 않으므로
+    //      (이것이 기존 click 인터셉터가 작동하지 않았던 근본 원인)
+    //      pointerdown 단계에서 disabled를 제거하고 명시적으로 click을 재발행
     (function() {
         function keepBtnClickable(id) {
             function getBtn() {
@@ -1159,18 +1160,23 @@ def build_ui() -> gr.Blocks:
                     .observe(w, {attributes: true, subtree: true, childList: true});
             })();
 
-            // ③ 캡처 클릭 인터셉터: disabled 버튼 클릭 시 wrapper까지 이벤트가 오면
-            //    disabled를 제거하고 버튼에 클릭을 재발행
-            (function setupClickIntercept() {
+            // ③ pointerdown 인터셉터: disabled 버튼은 click 이벤트를 발생시키지 않으므로
+            //    (이것이 기존 click 인터셉터가 작동하지 않았던 근본 원인)
+            //    pointerdown(disabled 버튼에서도 항상 발생) 단계에서 disabled를 제거하고
+            //    setTimeout으로 명시적인 click을 재발행 (중복 클릭 방지 플래그 포함)
+            (function setupPointerIntercept() {
                 var w = document.getElementById(id);
-                if (!w) { setTimeout(setupClickIntercept, 300); return; }
-                w.addEventListener('click', function(e) {
+                if (!w) { setTimeout(setupPointerIntercept, 300); return; }
+                var _pending = false;
+                w.addEventListener('pointerdown', function(e) {
                     var b = getBtn();
                     if (b && b.disabled) {
-                        e.stopImmediatePropagation();
                         b.removeAttribute('disabled');
                         b.disabled = false;
-                        b.click();
+                        if (!_pending) {
+                            _pending = true;
+                            setTimeout(function() { _pending = false; var bb = getBtn(); if (bb) bb.click(); }, 10);
+                        }
                     }
                 }, true); // capture phase
             })();
@@ -1226,6 +1232,89 @@ def build_ui() -> gr.Blocks:
                     });
                 });
             });
+        }).observe(document.body, {childList: true, subtree: true});
+    })();
+
+    // ── 라이트박스 열릴 때 레퍼런스 이미지 패널 표시 ─────────────────────────
+    (function() {
+        var PANEL_ID = 'lb-ref-panel';
+        var DETAIL_IDS = ['detail-ref-gen', 'detail-ref-full'];
+
+        function getLightbox() {
+            return document.querySelector('[data-testid="lightbox"]')
+                || document.querySelector('.lightbox');
+        }
+
+        function getRefImgs() {
+            for (var i = 0; i < DETAIL_IDS.length; i++) {
+                var g = document.getElementById(DETAIL_IDS[i]);
+                if (!g) continue;
+                var imgs = Array.from(g.querySelectorAll('img')).filter(function(img) {
+                    return img.src
+                        && img.src.indexOf('data:') !== 0
+                        && img.src.indexOf('_placeholder') === -1;
+                });
+                if (imgs.length) return imgs;
+            }
+            return [];
+        }
+
+        function removePanel() {
+            var p = document.getElementById(PANEL_ID);
+            if (p) p.remove();
+        }
+
+        function updatePanel() {
+            var lb = getLightbox();
+            if (!lb) { removePanel(); return; }
+
+            var refImgs = getRefImgs();
+            if (!refImgs.length) { removePanel(); return; }
+
+            var panel = document.getElementById(PANEL_ID);
+            if (!panel) {
+                panel = document.createElement('div');
+                panel.id = PANEL_ID;
+                panel.style.cssText = [
+                    'position:fixed', 'bottom:16px', 'left:50%',
+                    'transform:translateX(-50%)',
+                    'z-index:20000',
+                    'background:rgba(10,10,20,0.85)',
+                    'border-radius:10px',
+                    'padding:8px 14px',
+                    'display:flex', 'flex-direction:column', 'align-items:center', 'gap:6px',
+                    'max-width:90vw',
+                    'box-shadow:0 4px 20px rgba(0,0,0,0.6)',
+                    'pointer-events:none',
+                    'backdrop-filter:blur(6px)'
+                ].join(';');
+                var title = document.createElement('div');
+                title.style.cssText = 'color:rgba(255,255,255,0.7);font-size:0.72rem;font-weight:600;letter-spacing:0.04em;';
+                title.textContent = '📎 사용된 레퍼런스 이미지';
+                panel.appendChild(title);
+                var row = document.createElement('div');
+                row.id = PANEL_ID + '-row';
+                row.style.cssText = 'display:flex;flex-direction:row;gap:8px;flex-wrap:wrap;justify-content:center;max-width:80vw;';
+                panel.appendChild(row);
+                document.body.appendChild(panel);
+            }
+
+            var row = document.getElementById(PANEL_ID + '-row');
+            var newSrcs = refImgs.map(function(i) { return i.src; }).join(',');
+            if (row.dataset.srcs === newSrcs) return;
+            row.dataset.srcs = newSrcs;
+            row.innerHTML = '';
+            refImgs.forEach(function(img) {
+                var thumb = document.createElement('img');
+                thumb.src = img.src;
+                thumb.style.cssText = 'height:72px;max-width:120px;width:auto;object-fit:contain;border-radius:5px;background:rgba(255,255,255,0.06);';
+                row.appendChild(thumb);
+            });
+        }
+
+        // 라이트박스 열림/닫힘 및 레퍼런스 이미지 갱신을 단일 Observer로 감지
+        new MutationObserver(function() {
+            updatePanel();
         }).observe(document.body, {childList: true, subtree: true});
     })();
 
@@ -1716,7 +1805,7 @@ def build_ui() -> gr.Blocks:
                     except Exception:
                         return -1
 
-                # overlay_dl_gen 은 JS가 직접 downloadFromGallery()로 처리 (Python 불필요)
+                # overlay_dl_gen 은 Python 핸들러로 원본 사이즈 PNG를 반환 (탭 블록 외부에서 등록)
                 # overlay_vid_gen / overlay_ref_gen 은 triggerOverlayAction → Python 핸들러 필요
                 # (핸들러는 ref_image_vid 정의 후 탭 블록 외부에서 등록)
 
@@ -2099,7 +2188,7 @@ def build_ui() -> gr.Blocks:
                     js="() => { if (window.__msToggleAll) window.__msToggleAll('full-gallery'); }",
                 )
 
-                # overlay_dl_gallery 는 JS가 직접 downloadFromGallery()로 처리 (Python 불필요)
+                # overlay_dl_gallery 는 Python 핸들러로 원본 사이즈 PNG를 반환 (탭 블록 외부에서 등록)
                 # overlay_vid_gallery / overlay_ref_gallery 는 탭 블록 외부에서 핸들러 등록
 
         # ── 탭 간 "영상화" 버튼 공통 핸들러 ─────────────────────────────────
@@ -2180,6 +2269,30 @@ def build_ui() -> gr.Blocks:
             _use_as_ref_single,
             inputs=[overlay_ref_gallery, ref_image_upload],
             outputs=[ref_image_upload],
+        )
+
+        # 오버레이 다운로드 버튼 핸들러: 원본 사이즈 PNG를 서버에서 반환 (triggerOverlayAction 경유)
+        def _overlay_download(val: str):
+            """'idx:timestamp' 형식에서 인덱스를 추출하여 원본 이미지 경로를 반환합니다."""
+            try:
+                idx = int(val.split(":")[0])
+            except Exception:
+                return None
+            item = gallery_state.get_success_item_by_visual_index(idx)
+            if item is None or not item.image_path or not os.path.exists(item.image_path):
+                return None
+            return item.image_path
+
+        overlay_dl_gen.input(
+            _overlay_download,
+            inputs=[overlay_dl_gen],
+            outputs=[single_png_output_gen],
+        )
+
+        overlay_dl_gallery.input(
+            _overlay_download,
+            inputs=[overlay_dl_gallery],
+            outputs=[single_png_output_gallery],
         )
 
         gr.Markdown(
