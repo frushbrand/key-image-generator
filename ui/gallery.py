@@ -86,6 +86,21 @@ class GalleryState:
                 item.status = status
                 item.error = error
 
+    def fail_remaining_pending(self, gallery_indices: list[int], error: str) -> None:
+        """지정된 인덱스 중 아직 pending 상태인 항목을 실패로 표시합니다."""
+        with self._lock:
+            for idx in gallery_indices:
+                if 0 <= idx < len(self._items):
+                    item = self._items[idx]
+                    if item.status == "pending":
+                        item.status = "failed"
+                        item.error = error
+
+    def has_pending(self) -> bool:
+        """현재 pending 상태인 항목이 하나라도 있으면 True를 반환합니다."""
+        with self._lock:
+            return any(i.status == "pending" for i in self._items)
+
     def remove_by_visual_indices(self, visual_indices: list[int]) -> list[str]:
         """
         시각적 인덱스(역순 표시 기준, 대기 중·성공 항목 포함) 목록에 해당하는 항목을 제거합니다.
