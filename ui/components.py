@@ -484,7 +484,7 @@ def build_generate_fn(gallery_state: GalleryState):
                     progress_callback=on_progress,
                 )
             except Exception as e:
-                gallery_state.fail_remaining_pending(allocated_indices, str(e))
+                gallery_state.fail_remaining_pending(allocated_indices, repr(e))
 
         gen_thread = _threading.Thread(target=run_generation, daemon=True)
         gen_thread.start()
@@ -1487,8 +1487,8 @@ def build_ui() -> gr.Blocks:
                     value=gallery_state.to_gradio_gallery(),
                     elem_id="live-gallery",
                 )
-                # 1.5초마다 갤러리 상태를 자동 갱신 (병렬 생성 진행 중 실시간 반영)
-                gen_timer = gr.Timer(value=1.5, active=True)
+                # 1초마다 갤러리 상태를 자동 갱신 (병렬 생성 진행 중 실시간 반영)
+                gen_timer = gr.Timer(value=1, active=True)
                 single_png_output_gen = gr.File(label="PNG 다운로드", elem_id="single-png-gen")
                 selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gen")
                 ms_state_gen = gr.Textbox(
@@ -1636,6 +1636,9 @@ def build_ui() -> gr.Blocks:
 
                 # 타이머 갱신: 백그라운드 생성이 진행되는 동안 갤러리와 상태를 자동으로 업데이트
                 def poll_gallery_state():
+                    # pending 항목이 없으면 갱신 생략 (불필요한 UI 업데이트 방지)
+                    if not gallery_state.has_pending():
+                        return gr.update(), gr.update()
                     return gallery_state.to_gradio_gallery(), gallery_state.get_summary()
 
                 gen_timer.tick(poll_gallery_state, outputs=[live_gallery, gen_status])
