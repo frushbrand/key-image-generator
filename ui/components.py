@@ -2,8 +2,10 @@
 Gradio UI 컴포넌트 및 이벤트 핸들러 모듈
 """
 
+import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -200,6 +202,63 @@ APP_CSS = """
 
 # 레퍼런스 이미지 미리보기 썸네일 크기 (픽셀)
 _REF_THUMBNAIL_SIZE = 256
+
+# 새로고침 후에도 유지할 레퍼런스 이미지 영구 저장 디렉토리
+_PERSISTENT_REFS_DIR = Path(OUTPUT_BASE_DIR) / ".refs"
+
+
+def _ensure_refs_dir() -> None:
+    _PERSISTENT_REFS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _save_ref_images_persistent(file_paths: list) -> list:
+    """레퍼런스 이미지를 영구 저장소로 복사하고 영구 경로 목록을 반환합니다."""
+    if not file_paths:
+        return []
+    _ensure_refs_dir()
+    persistent_paths = []
+    for src in file_paths:
+        if not src or not os.path.exists(src):
+            continue
+        try:
+            with open(src, "rb") as fh:
+                h = hashlib.sha256(fh.read()).hexdigest()[:16]
+            ext = Path(src).suffix or ".png"
+            dst = _PERSISTENT_REFS_DIR / f"{h}{ext}"
+            if not dst.exists():
+                shutil.copy2(src, dst)
+            persistent_paths.append(str(dst))
+        except Exception:
+            continue
+    return persistent_paths
+
+
+def _load_persistent_ref_paths() -> list:
+    """설정 파일에서 저장된 레퍼런스 이미지 영구 경로를 로드합니다."""
+    cfg = load_settings()
+    paths = cfg.get("ref_image_paths", [])
+    return [p for p in paths if os.path.exists(p)]
+
+
+def _save_gen_setting(key: str):
+    """단일 생성 설정을 settings 파일에 저장하는 핸들러 팩토리."""
+    def handler(value):
+        cfg = load_settings()
+        cfg[key] = value
+        save_settings(cfg)
+    return handler
+
+
+def _save_ref_images_to_settings(files):
+    """업로드된 레퍼런스 이미지를 영구 저장하고 경로를 settings에 기록합니다."""
+    paths = []
+    if files:
+        paths = [f if isinstance(f, str) else f.path for f in files if f is not None]
+    persistent = _save_ref_images_persistent(paths)
+    cfg = load_settings()
+    cfg["ref_image_paths"] = persistent
+    save_settings(cfg)
+
 
 # ── 경로 안전 검사 ──────────────────────────────────────────────────────────
 
@@ -657,6 +716,51 @@ def build_ui() -> gr.Blocks:
     saved_api_key = saved.get("api_key", "")
     saved_kling_access = saved.get("kling_access_key", "")
     saved_kling_secret = saved.get("kling_secret_key", "")
+
+    # 저장된 UI 생성 설정 복원 (새로고침 후에도 유지)
+    saved_image_model = saved.get("image_model", DEFAULT_MODEL)
+    if saved_image_model not in MODELS:
+        saved_image_model = DEFAULT_MODEL
+    saved_image_ratio = saved.get("image_ratio", DEFAULT_RATIO)
+    if saved_image_ratio not in ASPECT_RATIOS:
+        saved_image_ratio = DEFAULT_RATIO
+    saved_image_quality = saved.get("image_quality", DEFAULT_QUALITY)
+    if saved_image_quality not in QUALITY_OPTIONS:
+        saved_image_quality = DEFAULT_QUALITY
+    try:
+        saved_image_count = max(1, min(int(saved.get("image_count", DEFAULT_COUNT)), MAX_COUNT))
+    except (TypeError, ValueError):
+        saved_image_count = DEFAULT_COUNT
+    saved_image_prompt = saved.get("image_prompt", "")
+
+    saved_video_model = saved.get("video_model", KLING_DEFAULT_MODEL)
+    if saved_video_model not in KLING_MODELS:
+        saved_video_model = KLING_DEFAULT_MODEL
+    saved_video_quality = saved.get("video_quality", KLING_DEFAULT_QUALITY)
+    if saved_video_quality not in KLING_QUALITY_OPTIONS:
+        saved_video_quality = KLING_DEFAULT_QUALITY
+    try:
+        saved_video_duration = max(3, min(int(saved.get("video_duration", KLING_DEFAULT_DURATION)), 15))
+    except (TypeError, ValueError):
+        saved_video_duration = KLING_DEFAULT_DURATION
+    saved_video_ratio = saved.get("video_ratio", KLING_DEFAULT_RATIO)
+    if saved_video_ratio not in KLING_VIDEO_RATIOS:
+        saved_video_ratio = KLING_DEFAULT_RATIO
+    saved_video_prompt = saved.get("video_prompt", "")
+    saved_video_enable_audio = bool(saved.get("video_enable_audio", False))
+
+    # 영구 저장된 레퍼런스 이미지 복원
+    saved_ref_paths = _load_persistent_ref_paths()
+    _initial_ref_preview_imgs = []
+    for _rp in saved_ref_paths:
+        try:
+            with Image.open(str(_rp)) as _img:
+                _img.draft('RGB', (_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE))
+                _img.thumbnail((_REF_THUMBNAIL_SIZE, _REF_THUMBNAIL_SIZE), Image.LANCZOS)
+                _initial_ref_preview_imgs.append(_img.convert("RGB").copy())
+        except Exception:
+            continue
+    _initial_ref_cols = 1 if len(_initial_ref_preview_imgs) == 1 else 2
 
     # 기존 outputs/ 디렉토리의 이미지를 갤러리 상태에 로드
     for i, entry in enumerate(load_existing_outputs()):
@@ -1368,27 +1472,27 @@ def build_ui() -> gr.Blocks:
 
                         model_radio = gr.Radio(
                             choices=list(MODELS.keys()),
-                            value=DEFAULT_MODEL,
+                            value=saved_image_model,
                             label="모델 선택",
                             info="나노 바나나 2: 속도·대량 작업 최적화 / 나노 바나나 프로: 전문 애셋·고급 추론 / 나노 바나나: 초고속·저지연",
                         )
 
                         ratio_dropdown = gr.Dropdown(
                             choices=list(ASPECT_RATIOS.keys()),
-                            value=DEFAULT_RATIO,
+                            value=saved_image_ratio,
                             label="화면 비율",
                         )
 
                         quality_dropdown = gr.Dropdown(
                             choices=list(QUALITY_OPTIONS.keys()),
-                            value=DEFAULT_QUALITY,
+                            value=saved_image_quality,
                             label="화질",
                         )
 
                         count_slider = gr.Slider(
                             minimum=1,
                             maximum=MAX_COUNT,
-                            value=DEFAULT_COUNT,
+                            value=saved_image_count,
                             step=1,
                             label=f"생성 개수 (최대 {MAX_COUNT}장)",
                         )
@@ -1398,6 +1502,7 @@ def build_ui() -> gr.Blocks:
                             file_count="multiple",
                             file_types=["image"],
                             elem_id="ref-upload-main",
+                            value=saved_ref_paths if saved_ref_paths else None,
                         )
 
                         ref_image_add = gr.File(
@@ -1415,10 +1520,11 @@ def build_ui() -> gr.Blocks:
 
                         ref_preview = gr.Gallery(
                             label="레퍼런스 미리보기 (썸네일 클릭 시 해당 이미지 삭제 🗑️)",
-                            columns=2,
+                            columns=_initial_ref_cols,
                             height=300,
                             object_fit="contain",
-                            visible=False,
+                            visible=bool(_initial_ref_preview_imgs),
+                            value=_initial_ref_preview_imgs if _initial_ref_preview_imgs else [],
                         )
 
                     with gr.Column(scale=2):
@@ -1428,11 +1534,12 @@ def build_ui() -> gr.Blocks:
                             label="프롬프트",
                             placeholder="생성할 이미지를 설명하세요. 한국어/영어 모두 사용 가능합니다.\n예: A cinematic key visual of a futuristic city at golden hour, dramatic lighting, 8K\n\n💡 Ctrl+Enter로 생성 시작",
                             lines=6,
+                            value=saved_image_prompt,
                             elem_id="image-prompt",
                         )
 
                         model_info = gr.Markdown(
-                            f"**{DEFAULT_MODEL}**: {MODELS[DEFAULT_MODEL]['description']}"
+                            f"**{saved_image_model}**: {MODELS[saved_image_model]['description']}"
                         )
 
                         btn_generate = gr.Button(
@@ -1588,11 +1695,20 @@ def build_ui() -> gr.Blocks:
                     cols = 1 if len(thumbs) == 1 else 2
                     return gr.update(value=new_paths), gr.update(visible=bool(thumbs), value=thumbs, columns=cols)
 
-                model_radio.change(update_model_info, inputs=[model_radio], outputs=[model_info])
+                model_radio.change(update_model_info, inputs=[model_radio], outputs=[model_info]).then(
+                    _save_gen_setting("image_model"), inputs=[model_radio]
+                )
+                ratio_dropdown.change(_save_gen_setting("image_ratio"), inputs=[ratio_dropdown])
+                quality_dropdown.change(_save_gen_setting("image_quality"), inputs=[quality_dropdown])
+                count_slider.change(_save_gen_setting("image_count"), inputs=[count_slider])
+                prompt_input.change(_save_gen_setting("image_prompt"), inputs=[prompt_input])
                 ref_image_upload.change(
                     update_ref_visibility,
                     inputs=[ref_image_upload],
                     outputs=[ref_preview],
+                ).then(
+                    _save_ref_images_to_settings,
+                    inputs=[ref_image_upload],
                 )
                 ref_image_add.change(
                     on_add_ref_images,
@@ -1774,7 +1890,7 @@ def build_ui() -> gr.Blocks:
 
                         kling_model_radio = gr.Radio(
                             choices=list(KLING_MODELS.keys()),
-                            value=KLING_DEFAULT_MODEL,
+                            value=saved_video_model,
                             label="Kling 모델",
                             info=" | ".join(
                                 f"{k}: {v['description']}"
@@ -1784,7 +1900,7 @@ def build_ui() -> gr.Blocks:
 
                         kling_quality_dropdown = gr.Dropdown(
                             choices=list(KLING_QUALITY_OPTIONS.keys()),
-                            value=KLING_DEFAULT_QUALITY,
+                            value=saved_video_quality,
                             label="화질",
                             info="720p (Standard): 빠름 / 1080p (Professional): 고화질",
                         )
@@ -1792,7 +1908,7 @@ def build_ui() -> gr.Blocks:
                         kling_duration_slider = gr.Slider(
                             minimum=3,
                             maximum=15,
-                            value=KLING_DEFAULT_DURATION,
+                            value=saved_video_duration,
                             step=1,
                             label="영상 길이 (초)",
                             info="3초부터 15초까지 1초 단위로 선택",
@@ -1800,7 +1916,7 @@ def build_ui() -> gr.Blocks:
 
                         kling_ratio_dropdown = gr.Dropdown(
                             choices=KLING_VIDEO_RATIOS,
-                            value=KLING_DEFAULT_RATIO,
+                            value=saved_video_ratio,
                             label="화면 비율",
                         )
 
@@ -1808,12 +1924,13 @@ def build_ui() -> gr.Blocks:
                             label="프롬프트 (선택)",
                             placeholder="영상 움직임을 설명하세요. 예: Camera slowly zooms in, dramatic lighting\n\n💡 Ctrl+Enter로 생성 시작",
                             lines=3,
+                            value=saved_video_prompt,
                             elem_id="video-prompt",
                         )
 
                         enable_audio_checkbox = gr.Checkbox(
                             label="🔊 오디오 생성 사용 (Kling v3 / v3 Omni 지원)",
-                            value=False,
+                            value=saved_video_enable_audio,
                             info="Kling v3 및 Kling 3 Omni 모델에서 오디오를 함께 생성합니다.",
                         )
 
@@ -1871,7 +1988,14 @@ def build_ui() -> gr.Blocks:
                     _on_kling_model_change,
                     inputs=[kling_model_radio],
                     outputs=[video_ref_tab],
+                ).then(
+                    _save_gen_setting("video_model"), inputs=[kling_model_radio]
                 )
+                kling_quality_dropdown.change(_save_gen_setting("video_quality"), inputs=[kling_quality_dropdown])
+                kling_duration_slider.change(_save_gen_setting("video_duration"), inputs=[kling_duration_slider])
+                kling_ratio_dropdown.change(_save_gen_setting("video_ratio"), inputs=[kling_ratio_dropdown])
+                kling_prompt_input.change(_save_gen_setting("video_prompt"), inputs=[kling_prompt_input])
+                enable_audio_checkbox.change(_save_gen_setting("video_enable_audio"), inputs=[enable_audio_checkbox])
 
                 unified_video_fn = build_unified_video_fn(gallery_state)
                 btn_generate_video.click(
