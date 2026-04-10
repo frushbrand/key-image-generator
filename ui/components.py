@@ -222,7 +222,7 @@ def _save_ref_images_persistent(file_paths: list) -> list:
             continue
         try:
             with open(src, "rb") as fh:
-                h = hashlib.md5(fh.read()).hexdigest()[:12]
+                h = hashlib.sha256(fh.read()).hexdigest()[:16]
             ext = Path(src).suffix or ".png"
             dst = _PERSISTENT_REFS_DIR / f"{h}{ext}"
             if not dst.exists():
