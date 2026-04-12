@@ -1593,8 +1593,8 @@ def build_ui() -> gr.Blocks:
                     value=gallery_state.to_gradio_gallery(),
                     elem_id="live-gallery",
                 )
-                # 1초마다 갤러리 상태를 자동 갱신 (병렬 생성 진행 중 실시간 반영)
-                gen_timer = gr.Timer(value=1, active=True)
+                # 생성 중일 때만 갤러리 상태를 자동 갱신 (idle 시 SSE 불필요 요청 방지)
+                gen_timer = gr.Timer(value=1, active=False)
                 single_png_output_gen = gr.File(label="PNG 다운로드", elem_id="single-png-gen")
                 selected_zip_output_gen = gr.File(label="선택 항목 ZIP 다운로드", elem_id="selected-zip-gen")
                 ms_state_gen = gr.Textbox(
@@ -1744,6 +1744,10 @@ def build_ui() -> gr.Blocks:
                     outputs=[live_gallery, gen_status],
                     concurrency_limit=None,
                 ).then(
+                    lambda: gr.update(active=True),
+                    outputs=[gen_timer],
+                    concurrency_limit=None,
+                ).then(
                     update_ref_visibility,
                     inputs=[ref_image_upload],
                     outputs=[ref_preview],
@@ -1751,12 +1755,12 @@ def build_ui() -> gr.Blocks:
 
                 # 타이머 갱신: 백그라운드 생성이 진행되는 동안 갤러리와 상태를 자동으로 업데이트
                 def poll_gallery_state():
-                    # pending 항목이 없으면 갱신 생략 (불필요한 UI 업데이트 방지)
+                    # pending 항목이 없으면 타이머 비활성화 (idle 시 SSE 요청 제거)
                     if not gallery_state.has_pending():
-                        return gr.update(), gr.update()
-                    return gallery_state.to_gradio_gallery(), gallery_state.get_summary()
+                        return gr.update(), gr.update(), gr.update(active=False)
+                    return gallery_state.to_gradio_gallery(), gallery_state.get_summary(), gr.update()
 
-                gen_timer.tick(poll_gallery_state, outputs=[live_gallery, gen_status])
+                gen_timer.tick(poll_gallery_state, outputs=[live_gallery, gen_status, gen_timer])
 
                 def _load_ref_detail_images(item):
                     """GalleryItem에서 레퍼런스 이미지를 상세 패널용 크기로 로드합니다."""
