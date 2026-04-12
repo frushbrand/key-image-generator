@@ -89,8 +89,9 @@ APP_CSS = """
             width: 28px !important;
             height: 28px !important;
         }
-        /* Gradio 6+: 라이트박스는 .preview 클래스 사용 */
-        .preview button:not([aria-label="Close"]):not([title="Close"]) {
+        /* Gradio 6+: 라이트박스는 .preview 클래스 사용
+           media-button(이미지 컨테이너)과 thumbnail-item(탐색 썸네일)은 숨기지 않음 */
+        .preview button:not([aria-label="Close"]):not([title="Close"]):not(.media-button):not(.thumbnail-item):not(.thumbnail-small) {
             display: none !important;
         }
         .preview button[aria-label="Close"],
@@ -1236,17 +1237,24 @@ def build_ui() -> gr.Blocks:
                 ? (detailedImg.closest('.preview') || detailedImg.parentElement)
                 : (document.querySelector('[data-testid="lightbox"]') || document.querySelector('.lightbox'));
             if (!lb) return;
-            // 클릭 대상이 이미지·버튼·캡션이 아니면 닫기
-            if (!e.target.closest('img')
-                && !e.target.closest('button')
-                && !e.target.closest('[data-testid="caption"]')
-                && !e.target.closest('.caption')
-                && !e.target.closest('[class*="caption"]')) {
-                // Gradio 6: aria-label="Close", Gradio 5: 마지막 버튼
-                var closeBtn = lb.querySelector('button[aria-label="Close"]')
-                            || lb.querySelector('button[title="Close"]')
-                            || Array.from(lb.querySelectorAll('button')).pop();
-                if (closeBtn) closeBtn.click();
+
+            var closeBtn = lb.querySelector('button[aria-label="Close"]')
+                        || lb.querySelector('button[title="Close"]')
+                        || Array.from(lb.querySelectorAll('button')).pop();
+            if (!closeBtn) return;
+
+            if (lb.contains(e.target)) {
+                // 라이트박스 내부 클릭: 이미지·버튼·캡션이 아닌 배경 영역이면 닫기
+                if (!e.target.closest('img')
+                    && !e.target.closest('button')
+                    && !e.target.closest('[data-testid="caption"]')
+                    && !e.target.closest('.caption')
+                    && !e.target.closest('[class*="caption"]')) {
+                    closeBtn.click();
+                }
+            } else {
+                // 라이트박스 외부 클릭: 항상 닫기 (툴바 버튼 등 포함)
+                closeBtn.click();
             }
         }, true);
     })();
