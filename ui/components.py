@@ -1401,7 +1401,7 @@ def build_ui() -> gr.Blocks:
         }
 
         function extractPrompt(fullText) {
-            // 캡션 형식: "#N | model | ratio | quality\nprompt text"
+            // 캡션 형식: "#N | model | ratio | quality\\nprompt text"
             // 첫 번째 줄바꿈 이후가 프롬프트 텍스트
             var nl = fullText.indexOf('\n');
             return (nl >= 0 ? fullText.slice(nl + 1) : fullText).trim();
