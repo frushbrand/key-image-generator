@@ -155,10 +155,13 @@ APP_CSS = """
         }
 
         /* 라이트박스 캡션: 전체 표시 (프롬프트 전체 확인) */
+        /* Gradio 5 */
         [data-testid="lightbox"] [data-testid="caption"],
         [data-testid="lightbox"] .caption,
         [data-testid="lightbox"] [class*="caption"],
-        .fixed [data-testid="caption"] {
+        .fixed [data-testid="caption"],
+        /* Gradio 6+ */
+        .preview .caption {
             white-space: pre-wrap !important;
             overflow: visible !important;
             text-overflow: unset !important;
@@ -172,6 +175,31 @@ APP_CSS = """
             margin-top: 6px !important;
             position: relative !important;
             z-index: 5 !important;
+        }
+
+        /* 라이트박스 프롬프트 복사 버튼 */
+        #lb-copy-prompt-btn {
+            position: fixed;
+            z-index: 21000;
+            background: rgba(30,30,50,0.88);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 0.82rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            backdrop-filter: blur(4px);
+            transition: background 0.15s, transform 0.1s;
+            pointer-events: auto;
+            white-space: nowrap;
+        }
+        #lb-copy-prompt-btn:hover {
+            background: rgba(60,60,100,0.95);
+            transform: scale(1.05);
         }
 
         /* 생성 대기 중(pending) 플레이스홀더 이미지: 맥박 애니메이션 */
@@ -1344,6 +1372,101 @@ def build_ui() -> gr.Blocks:
         new MutationObserver(function() {
             updatePanel();
         }).observe(document.body, {childList: true, subtree: true});
+    })();
+
+    // ── 라이트박스 캡션 프롬프트 복사 버튼 ──────────────────────────────────
+    (function() {
+        var BTN_ID = 'lb-copy-prompt-btn';
+        var copyTimer = null;
+
+        function getCaptionEl() {
+            // Gradio 6+: <caption class="caption svelte-..."> inside .preview
+            var preview = document.querySelector('.preview');
+            if (preview) {
+                var cap = preview.querySelector('caption.caption, [class*="caption"]');
+                if (cap && cap.textContent.trim()) return cap;
+            }
+            // Gradio 5 fallback
+            var lb = document.querySelector('[data-testid="lightbox"]') || document.querySelector('.lightbox');
+            if (lb) return lb.querySelector('[data-testid="caption"], .caption, [class*="caption"]');
+            return null;
+        }
+
+        function extractPrompt(fullText) {
+            // 캡션 형식: "#N | model | ratio | quality\nprompt text"
+            // 첫 번째 줄바꿈 이후가 프롬프트 텍스트
+            var nl = fullText.indexOf('\n');
+            return (nl >= 0 ? fullText.slice(nl + 1) : fullText).trim();
+        }
+
+        function removeBtn() {
+            var b = document.getElementById(BTN_ID);
+            if (b) b.remove();
+            if (copyTimer) { clearTimeout(copyTimer); copyTimer = null; }
+        }
+
+        function updateBtn() {
+            var cap = getCaptionEl();
+            if (!cap) { removeBtn(); return; }
+
+            var prompt = extractPrompt(cap.textContent || '');
+            if (!prompt) { removeBtn(); return; }
+
+            var btn = document.getElementById(BTN_ID);
+            if (!btn) {
+                btn = document.createElement('button');
+                btn.id = BTN_ID;
+                btn.title = '프롬프트 복사';
+                btn.textContent = '📋 복사';
+
+                function showCopySuccess() {
+                    btn.textContent = '✅ 복사됨';
+                    if (copyTimer) clearTimeout(copyTimer);
+                    copyTimer = setTimeout(function() { btn.textContent = '📋 복사'; }, 1500);
+                }
+                function showCopyError() {
+                    btn.textContent = '❌ 실패';
+                    if (copyTimer) clearTimeout(copyTimer);
+                    copyTimer = setTimeout(function() { btn.textContent = '📋 복사'; }, 1500);
+                }
+
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    var text = extractPrompt((getCaptionEl() || {textContent:''}).textContent || '');
+                    if (!text) return;
+                    navigator.clipboard.writeText(text).then(showCopySuccess).catch(function() {
+                        // clipboard API 실패 시 execCommand 폴백 (deprecated이지만 구형 브라우저 대응)
+                        try {
+                            var ta = document.createElement('textarea');
+                            ta.value = text;
+                            ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            var ok = document.execCommand('copy');
+                            document.body.removeChild(ta);
+                            if (ok) { showCopySuccess(); } else { showCopyError(); }
+                        } catch (_) {
+                            showCopyError();
+                        }
+                    });
+                });
+                document.body.appendChild(btn);
+            }
+
+            // 캡션 요소 위치를 기반으로 버튼 위치 지정 (오른쪽 상단)
+            var rect = cap.getBoundingClientRect();
+            btn.style.top = (rect.top + 4) + 'px';
+            btn.style.right = (window.innerWidth - rect.right + 4) + 'px';
+            btn.style.left = 'auto';
+        }
+
+        new MutationObserver(function() {
+            updateBtn();
+        }).observe(document.body, {childList: true, subtree: true, characterData: true});
+
+        // 스크롤/리사이즈 시 버튼 위치 재계산
+        window.addEventListener('scroll', updateBtn, true);
+        window.addEventListener('resize', updateBtn);
     })();
 
     // ── Ctrl+Enter 단축키: 이미지/영상 생성 ──────────────────────────────
