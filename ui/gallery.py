@@ -76,6 +76,7 @@ class GalleryState:
         thumbnail_path: str,
         status: str = "success",
         error: Optional[str] = None,
+        reference_image_paths: Optional[list] = None,
     ) -> None:
         """대기 중 슬롯을 완료된 이미지(또는 실패)로 업데이트합니다."""
         with self._lock:
@@ -85,6 +86,8 @@ class GalleryState:
                 item.thumbnail_path = thumbnail_path
                 item.status = status
                 item.error = error
+                if reference_image_paths is not None:
+                    item.reference_image_paths = reference_image_paths
 
     def fail_remaining_pending(self, gallery_indices: list[int], error: str) -> None:
         """지정된 인덱스 중 아직 pending 상태인 항목을 실패로 표시합니다."""
