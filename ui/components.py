@@ -71,6 +71,7 @@ APP_CSS = """
         .generate-btn { background: #4f46e5 !important; color: white !important; font-size: 1.1rem !important; }
 
         /* 라이트박스: 닫기(X) 버튼만 표시, 나머지 모두 숨김 */
+        /* Gradio 5 */
         .lightbox button,
         [data-testid="lightbox"] button {
             display: none !important;
@@ -85,6 +86,22 @@ APP_CSS = """
         }
         .lightbox button:last-child svg,
         [data-testid="lightbox"] button:last-child svg {
+            width: 28px !important;
+            height: 28px !important;
+        }
+        /* Gradio 6+: 라이트박스는 .preview 클래스 사용 */
+        .preview button:not([aria-label="Close"]):not([title="Close"]) {
+            display: none !important;
+        }
+        .preview button[aria-label="Close"],
+        .preview button[title="Close"] {
+            display: flex !important;
+            width: 48px !important;
+            height: 48px !important;
+            min-width: 48px !important;
+        }
+        .preview button[aria-label="Close"] svg,
+        .preview button[title="Close"] svg {
             width: 28px !important;
             height: 28px !important;
         }
@@ -138,10 +155,13 @@ APP_CSS = """
         }
 
         /* 라이트박스 캡션: 전체 표시 (프롬프트 전체 확인) */
+        /* Gradio 5 */
         [data-testid="lightbox"] [data-testid="caption"],
         [data-testid="lightbox"] .caption,
         [data-testid="lightbox"] [class*="caption"],
-        .fixed [data-testid="caption"] {
+        .fixed [data-testid="caption"],
+        /* Gradio 6+ */
+        .preview .caption {
             white-space: pre-wrap !important;
             overflow: visible !important;
             text-overflow: unset !important;
@@ -155,6 +175,31 @@ APP_CSS = """
             margin-top: 6px !important;
             position: relative !important;
             z-index: 5 !important;
+        }
+
+        /* 라이트박스 프롬프트 복사 버튼 */
+        #lb-copy-prompt-btn {
+            position: fixed;
+            z-index: 21000;
+            background: rgba(30,30,50,0.88);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 0.82rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            backdrop-filter: blur(4px);
+            transition: background 0.15s, transform 0.1s;
+            pointer-events: auto;
+            white-space: nowrap;
+        }
+        #lb-copy-prompt-btn:hover {
+            background: rgba(60,60,100,0.95);
+            transform: scale(1.05);
         }
 
         /* 생성 대기 중(pending) 플레이스홀더 이미지: 맥박 애니메이션 */
@@ -525,7 +570,7 @@ def build_generate_fn(gallery_state: GalleryState):
                             img, model_name, ratio, prompt, quality,
                             reference_image_paths=ref_paths,
                         )
-                        gallery_state.fill_pending_item(gallery_index, img_path, thumb_path, "success")
+                        gallery_state.fill_pending_item(gallery_index, img_path, thumb_path, "success", reference_image_paths=ref_paths)
                     except Exception as e:
                         gallery_state.fill_pending_item(gallery_index, "", "", "failed", str(e))
                 else:
@@ -1184,17 +1229,23 @@ def build_ui() -> gr.Blocks:
     // ── 라이트박스: 이미지 외부 영역 클릭 시 자동 닫기 ──────────────────────
     (function() {
         document.addEventListener('click', function(e) {
-            var lb = document.querySelector('[data-testid="lightbox"]')
-                  || document.querySelector('.lightbox');
+            // Gradio 6+: 라이트박스 이미지는 data-testid="detailed-image"
+            // Gradio 5 이하: [data-testid="lightbox"] 또는 .lightbox
+            var detailedImg = document.querySelector('[data-testid="detailed-image"]');
+            var lb = detailedImg
+                ? (detailedImg.closest('.preview') || detailedImg.parentElement)
+                : (document.querySelector('[data-testid="lightbox"]') || document.querySelector('.lightbox'));
             if (!lb) return;
             // 클릭 대상이 이미지·버튼·캡션이 아니면 닫기
-            // 배경(backdrop)이 lb 외부 별도 요소일 수 있으므로 lb.contains 검사 제거
             if (!e.target.closest('img')
                 && !e.target.closest('button')
                 && !e.target.closest('[data-testid="caption"]')
                 && !e.target.closest('.caption')
                 && !e.target.closest('[class*="caption"]')) {
-                var closeBtn = Array.from(lb.querySelectorAll('button')).pop();
+                // Gradio 6: aria-label="Close", Gradio 5: 마지막 버튼
+                var closeBtn = lb.querySelector('button[aria-label="Close"]')
+                            || lb.querySelector('button[title="Close"]')
+                            || Array.from(lb.querySelectorAll('button')).pop();
                 if (closeBtn) closeBtn.click();
             }
         }, true);
@@ -1206,17 +1257,20 @@ def build_ui() -> gr.Blocks:
             mutations.forEach(function(m) {
                 m.addedNodes.forEach(function(node) {
                     if (node.nodeType !== 1) return;
-                    // Gradio 라이트박스는 fixed div에 img를 포함
+                    // Gradio 라이트박스는 fixed div 또는 .preview 클래스 div에 img를 포함
                     var imgs = [];
                     if (node.tagName === 'IMG') {
                         imgs = [node];
                     } else if (typeof node.querySelectorAll === 'function') {
-                        // 라이트박스 컨테이너로 추정되는 고정 위치 요소 내 이미지
+                        // Gradio 6+: .preview 컨테이너 또는 data-testid="detailed-image"
+                        var isGr6Preview = node.classList && node.classList.contains('preview');
+                        var hasDetailedImg = !!node.querySelector('[data-testid="detailed-image"]');
+                        // Gradio 5: 고정 위치 요소 또는 [data-testid="lightbox"]
                         var fixed = node.style && node.style.position === 'fixed';
-                        if (fixed || node.closest && node.closest('[data-testid="lightbox"]')) {
+                        if (isGr6Preview || hasDetailedImg || fixed || (node.closest && node.closest('[data-testid="lightbox"]'))) {
                             imgs = Array.from(node.querySelectorAll('img'));
                         }
-                        // data-testid="lightbox" 내부 이미지
+                        // data-testid="lightbox" 내부 이미지 (Gradio 5)
                         if (!imgs.length) {
                             var lb = node.querySelector('[data-testid="lightbox"]');
                             if (lb) imgs = Array.from(lb.querySelectorAll('img'));
@@ -1238,6 +1292,11 @@ def build_ui() -> gr.Blocks:
         var DETAIL_IDS = ['detail-ref-gen', 'detail-ref-full'];
 
         function getLightbox() {
+            // Gradio 6+: 라이트박스 이미지는 data-testid="detailed-image"
+            var detailedImg = document.querySelector('[data-testid="detailed-image"]');
+            if (detailedImg) {
+                return detailedImg.closest('.preview') || detailedImg.parentElement;
+            }
             return document.querySelector('[data-testid="lightbox"]')
                 || document.querySelector('.lightbox');
         }
@@ -1313,6 +1372,101 @@ def build_ui() -> gr.Blocks:
         new MutationObserver(function() {
             updatePanel();
         }).observe(document.body, {childList: true, subtree: true});
+    })();
+
+    // ── 라이트박스 캡션 프롬프트 복사 버튼 ──────────────────────────────────
+    (function() {
+        var BTN_ID = 'lb-copy-prompt-btn';
+        var copyTimer = null;
+
+        function getCaptionEl() {
+            // Gradio 6+: <caption class="caption svelte-..."> inside .preview
+            var preview = document.querySelector('.preview');
+            if (preview) {
+                var cap = preview.querySelector('caption.caption, [class*="caption"]');
+                if (cap && cap.textContent.trim()) return cap;
+            }
+            // Gradio 5 fallback
+            var lb = document.querySelector('[data-testid="lightbox"]') || document.querySelector('.lightbox');
+            if (lb) return lb.querySelector('[data-testid="caption"], .caption, [class*="caption"]');
+            return null;
+        }
+
+        function extractPrompt(fullText) {
+            // 캡션 형식: "#N | model | ratio | quality\nprompt text"
+            // 첫 번째 줄바꿈 이후가 프롬프트 텍스트
+            var nl = fullText.indexOf('\n');
+            return (nl >= 0 ? fullText.slice(nl + 1) : fullText).trim();
+        }
+
+        function removeBtn() {
+            var b = document.getElementById(BTN_ID);
+            if (b) b.remove();
+            if (copyTimer) { clearTimeout(copyTimer); copyTimer = null; }
+        }
+
+        function updateBtn() {
+            var cap = getCaptionEl();
+            if (!cap) { removeBtn(); return; }
+
+            var prompt = extractPrompt(cap.textContent || '');
+            if (!prompt) { removeBtn(); return; }
+
+            var btn = document.getElementById(BTN_ID);
+            if (!btn) {
+                btn = document.createElement('button');
+                btn.id = BTN_ID;
+                btn.title = '프롬프트 복사';
+                btn.textContent = '📋 복사';
+
+                function showCopySuccess() {
+                    btn.textContent = '✅ 복사됨';
+                    if (copyTimer) clearTimeout(copyTimer);
+                    copyTimer = setTimeout(function() { btn.textContent = '📋 복사'; }, 1500);
+                }
+                function showCopyError() {
+                    btn.textContent = '❌ 실패';
+                    if (copyTimer) clearTimeout(copyTimer);
+                    copyTimer = setTimeout(function() { btn.textContent = '📋 복사'; }, 1500);
+                }
+
+                btn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    var text = extractPrompt((getCaptionEl() || {textContent:''}).textContent || '');
+                    if (!text) return;
+                    navigator.clipboard.writeText(text).then(showCopySuccess).catch(function() {
+                        // clipboard API 실패 시 execCommand 폴백 (deprecated이지만 구형 브라우저 대응)
+                        try {
+                            var ta = document.createElement('textarea');
+                            ta.value = text;
+                            ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+                            document.body.appendChild(ta);
+                            ta.select();
+                            var ok = document.execCommand('copy');
+                            document.body.removeChild(ta);
+                            if (ok) { showCopySuccess(); } else { showCopyError(); }
+                        } catch (_) {
+                            showCopyError();
+                        }
+                    });
+                });
+                document.body.appendChild(btn);
+            }
+
+            // 캡션 요소 위치를 기반으로 버튼 위치 지정 (오른쪽 상단)
+            var rect = cap.getBoundingClientRect();
+            btn.style.top = (rect.top + 4) + 'px';
+            btn.style.right = (window.innerWidth - rect.right + 4) + 'px';
+            btn.style.left = 'auto';
+        }
+
+        new MutationObserver(function() {
+            updateBtn();
+        }).observe(document.body, {childList: true, subtree: true, characterData: true});
+
+        // 스크롤/리사이즈 시 버튼 위치 재계산
+        window.addEventListener('scroll', updateBtn, true);
+        window.addEventListener('resize', updateBtn);
     })();
 
     // ── Ctrl+Enter 단축키: 이미지/영상 생성 ──────────────────────────────
