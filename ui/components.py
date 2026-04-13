@@ -556,7 +556,8 @@ def build_generate_fn(gallery_state: GalleryState):
             raw_paths = [r if isinstance(r, str) else r.path for r in ref_images if r is not None]
             ref_pil_images = load_reference_images(raw_paths[:MAX_REFERENCE_IMAGES])
             # 새로고침 후에도 경로가 유효하도록 영구 저장소에 복사
-            ref_paths = _save_ref_images_persistent(raw_paths[:MAX_REFERENCE_IMAGES]) or raw_paths[:MAX_REFERENCE_IMAGES]
+            persistent_paths = _save_ref_images_persistent(raw_paths[:MAX_REFERENCE_IMAGES])
+            ref_paths = persistent_paths if persistent_paths else raw_paths[:MAX_REFERENCE_IMAGES]
 
         # ① 즉시 N개의 대기 중 슬롯 생성
         allocated_indices = gallery_state.allocate_pending_items(
@@ -1317,7 +1318,7 @@ def build_ui() -> gr.Blocks:
             var el = document.getElementById('lb-ref-urls-state');
             if (el) {
                 var inp = el.querySelector('textarea, input[type="text"]');
-                if (inp && inp.value && inp.value !== '[]') {
+                if (inp && inp.value) {
                     try {
                         var paths = JSON.parse(inp.value);
                         if (Array.isArray(paths) && paths.length) {
@@ -1971,7 +1972,7 @@ def build_ui() -> gr.Blocks:
                                 abs_p = str(Path(p).resolve())
                                 if os.path.exists(abs_p):
                                     ref_abs_paths.append(abs_p)
-                            except Exception:
+                            except (OSError, ValueError):
                                 pass
                     return idx, ref_imgs, gr.update(visible=has_refs), json.dumps(ref_abs_paths)
 
@@ -2385,7 +2386,7 @@ def build_ui() -> gr.Blocks:
                                 abs_p = str(Path(p).resolve())
                                 if os.path.exists(abs_p):
                                     ref_abs_paths.append(abs_p)
-                            except Exception:
+                            except (OSError, ValueError):
                                 pass
                     return idx, ref_imgs, gr.update(visible=has_refs), json.dumps(ref_abs_paths)
 
