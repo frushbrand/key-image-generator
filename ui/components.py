@@ -234,7 +234,8 @@ APP_CSS = """
            처리하지 않아 Python 핸들러가 트리거되지 않음 */
         #ms-state-gen, #ms-state-gallery,
         #overlay-dl-gen, #overlay-vid-gen, #overlay-ref-gen,
-        #overlay-dl-gallery, #overlay-vid-gallery, #overlay-ref-gallery {
+        #overlay-dl-gallery, #overlay-vid-gallery, #overlay-ref-gallery,
+        #lb-ref-urls-state {
             position: absolute !important;
             left: -9999px !important;
             top: auto !important;
@@ -552,9 +553,11 @@ def build_generate_fn(gallery_state: GalleryState):
         ref_pil_images: list[Image.Image] = []
         ref_paths: list[str] = []
         if ref_images:
-            ref_paths = [r if isinstance(r, str) else r.path for r in ref_images if r is not None]
-            ref_pil_images = load_reference_images(ref_paths[:MAX_REFERENCE_IMAGES])
-            ref_paths = ref_paths[:MAX_REFERENCE_IMAGES]
+            raw_paths = [r if isinstance(r, str) else r.path for r in ref_images if r is not None]
+            ref_pil_images = load_reference_images(raw_paths[:MAX_REFERENCE_IMAGES])
+            # 새로고침 후에도 경로가 유효하도록 영구 저장소에 복사
+            persistent_paths = _save_ref_images_persistent(raw_paths[:MAX_REFERENCE_IMAGES])
+            ref_paths = persistent_paths if persistent_paths else raw_paths[:MAX_REFERENCE_IMAGES]
 
         # ① 즉시 N개의 대기 중 슬롯 생성
         allocated_indices = gallery_state.allocate_pending_items(
@@ -919,6 +922,15 @@ def build_ui() -> gr.Blocks:
         return src.replace(/\/thumbs\/([^/?]+)(\?|$)/, '/$1$2');
     }
 
+    // ── 공통 헬퍼: Gradio/Svelte 감지 가능한 네이티브 값 설정 ────────────────
+    function setNativeValue(inp, val) {
+        var proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        var nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(inp, val); } else { inp.value = val; }
+        inp.dispatchEvent(new InputEvent('input', {bubbles: true, cancelable: true}));
+        inp.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+
     // ── 갤러리 호버 플로팅 오버레이 ─────────────────────────────────────────
     (function() {
         var CFGS = [
@@ -1026,14 +1038,6 @@ def build_ui() -> gr.Blocks:
             a.click();
             document.body.removeChild(a);
             return true;
-        }
-        // input/textarea 요소에 값을 설정하고 Gradio/Svelte가 감지할 수 있는 이벤트를 발생시킴
-        function setNativeValue(inp, val) {
-            var proto = inp.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-            var nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value');
-            if (nativeSetter && nativeSetter.set) { nativeSetter.set.call(inp, val); } else { inp.value = val; }
-            inp.dispatchEvent(new InputEvent('input', {bubbles: true, cancelable: true}));
-            inp.dispatchEvent(new Event('change', {bubbles: true}));
         }
         // 오버레이 버튼 클릭: 라이트박스 열지 않고 서버 액션 직접 트리거
         function triggerOverlayAction(gid, key, idx) {
@@ -1309,7 +1313,21 @@ def build_ui() -> gr.Blocks:
                 || document.querySelector('.lightbox');
         }
 
-        function getRefImgs() {
+        function getRefImgUrls() {
+            // 우선: lb-ref-urls-state 텍스트박스에서 절대 경로 JSON을 읽어 Gradio 파일 URL 생성
+            var el = document.getElementById('lb-ref-urls-state');
+            if (el) {
+                var inp = el.querySelector('textarea, input[type="text"]');
+                if (inp && inp.value) {
+                    try {
+                        var paths = JSON.parse(inp.value);
+                        if (Array.isArray(paths) && paths.length) {
+                            return paths.map(function(p) { return '/gradio_api/file=' + p; });
+                        }
+                    } catch(e) {}
+                }
+            }
+            // 폴백: 상세 패널 갤러리 DOM에서 직접 img 태그 읽기
             for (var i = 0; i < DETAIL_IDS.length; i++) {
                 var g = document.getElementById(DETAIL_IDS[i]);
                 if (!g) continue;
@@ -1318,7 +1336,7 @@ def build_ui() -> gr.Blocks:
                         && img.src.indexOf('data:') !== 0
                         && img.src.indexOf('_placeholder') === -1;
                 });
-                if (imgs.length) return imgs;
+                if (imgs.length) return imgs.map(function(img) { return img.src; });
             }
             return [];
         }
@@ -1332,8 +1350,8 @@ def build_ui() -> gr.Blocks:
             var lb = getLightbox();
             if (!lb) { removePanel(); return; }
 
-            var refImgs = getRefImgs();
-            if (!refImgs.length) { removePanel(); return; }
+            var refUrls = getRefImgUrls();
+            if (!refUrls.length) { removePanel(); return; }
 
             var panel = document.getElementById(PANEL_ID);
             if (!panel) {
@@ -1364,13 +1382,13 @@ def build_ui() -> gr.Blocks:
             }
 
             var row = document.getElementById(PANEL_ID + '-row');
-            var newSrcs = refImgs.map(function(i) { return i.src; }).join(',');
+            var newSrcs = refUrls.join(',');
             if (row.dataset.srcs === newSrcs) return;
             row.dataset.srcs = newSrcs;
             row.innerHTML = '';
-            refImgs.forEach(function(img) {
+            refUrls.forEach(function(src) {
                 var thumb = document.createElement('img');
-                thumb.src = img.src;
+                thumb.src = src;
                 thumb.style.cssText = 'height:72px;max-width:120px;width:auto;object-fit:contain;border-radius:5px;background:rgba(255,255,255,0.06);';
                 row.appendChild(thumb);
             });
@@ -1770,6 +1788,9 @@ def build_ui() -> gr.Blocks:
                 overlay_vid_gen = gr.Textbox(elem_id="overlay-vid-gen", interactive=True)
                 overlay_ref_gen = gr.Textbox(elem_id="overlay-ref-gen", interactive=True)
 
+                # JS 라이트박스 레퍼런스 패널용: 선택된 이미지의 레퍼런스 절대 경로 JSON (항상 DOM에 유지)
+                lb_ref_urls_state = gr.Textbox(value="[]", elem_id="lb-ref-urls-state", interactive=False)
+
                 # 상세보기 레퍼런스 이미지 패널
                 with gr.Group(visible=False) as detail_panel_gen:
                     gr.Markdown("#### 🖼️ 이 이미지 생성에 사용된 레퍼런스")
@@ -1943,11 +1964,21 @@ def build_ui() -> gr.Blocks:
                     idx = evt.index
                     item = gallery_state.get_success_item_by_visual_index(idx)
                     ref_imgs, has_refs = _load_ref_detail_images(item)
-                    return idx, ref_imgs, gr.update(visible=has_refs)
+                    # JS 라이트박스 패널용: 절대 경로 JSON (Gradio 파일 API로 접근 가능)
+                    ref_abs_paths = []
+                    if item and item.reference_image_paths:
+                        for p in item.reference_image_paths:
+                            try:
+                                abs_p = str(Path(p).resolve())
+                                if os.path.exists(abs_p):
+                                    ref_abs_paths.append(abs_p)
+                            except (OSError, ValueError):
+                                pass
+                    return idx, ref_imgs, gr.update(visible=has_refs), json.dumps(ref_abs_paths)
 
                 live_gallery.select(
                     on_gen_gallery_select,
-                    outputs=[selected_img_idx_gen, detail_ref_gallery_gen, detail_panel_gen],
+                    outputs=[selected_img_idx_gen, detail_ref_gallery_gen, detail_panel_gen, lb_ref_urls_state],
                 )
 
                 def refresh_live_gallery():
@@ -2347,11 +2378,21 @@ def build_ui() -> gr.Blocks:
                     idx = evt.index
                     item = gallery_state.get_success_item_by_visual_index(idx)
                     ref_imgs, has_refs = _load_ref_detail_images(item)
-                    return idx, ref_imgs, gr.update(visible=has_refs)
+                    # JS 라이트박스 패널용: 절대 경로 JSON (Gradio 파일 API로 접근 가능)
+                    ref_abs_paths = []
+                    if item and item.reference_image_paths:
+                        for p in item.reference_image_paths:
+                            try:
+                                abs_p = str(Path(p).resolve())
+                                if os.path.exists(abs_p):
+                                    ref_abs_paths.append(abs_p)
+                            except (OSError, ValueError):
+                                pass
+                    return idx, ref_imgs, gr.update(visible=has_refs), json.dumps(ref_abs_paths)
 
                 full_gallery.select(
                     on_gallery_tab_select,
-                    outputs=[selected_img_idx_gallery, detail_ref_gallery_full, detail_panel_gallery],
+                    outputs=[selected_img_idx_gallery, detail_ref_gallery_full, detail_panel_gallery, lb_ref_urls_state],
                 )
 
                 smart_download_gallery_fn = build_smart_download_fn(gallery_state)
