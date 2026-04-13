@@ -1077,18 +1077,8 @@ def build_ui() -> gr.Blocks:
         ov.addEventListener('mousedown', function(e) {
             var btn = e.target.closest('[data-k]'); if (!btn || !curItem || !curCfg) return;
             e.preventDefault(); e.stopPropagation();
-            // 현재 호버 인덱스를 전역 변수에 저장 — Python 버튼의 js 프리프로세서가 읽음
-            window.__ovIdx = curItemIdx;
-            if (btn.dataset.k === 'dl') {
-                // 오버레이 다운로드: 신뢰 이벤트(click)를 통해 전역 버튼 트리거 (isTrusted 보장)
-                gClick(curCfg.dl);
-            } else if (btn.dataset.k === 'vid') {
-                // 오버레이 영상화: 신뢰 이벤트(click)를 통해 전역 버튼 트리거 (isTrusted 보장)
-                gClick(curCfg.vid);
-            } else if (btn.dataset.k === 'ref') {
-                // 오버레이 레퍼런스: 신뢰 이벤트(click)를 통해 전역 버튼 트리거 (isTrusted 보장)
-                gClick(curCfg.ref);
-            }
+            // overlay-dl/vid/ref textbox 에 값을 설정하여 .input() 핸들러 직접 트리거
+            triggerOverlayAction(curCfg.id, btn.dataset.k, curItemIdx);
         });
         window.addEventListener('scroll', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); }, true);
         window.addEventListener('resize', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); });
