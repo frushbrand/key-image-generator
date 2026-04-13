@@ -1045,6 +1045,13 @@ def build_ui() -> gr.Blocks:
             ov.style.left = r.left + 'px'; ov.style.top = r.top + 'px';
             ov.style.width = r.width + 'px'; ov.style.height = r.height + 'px';
             ov.style.display = 'flex';
+            // 각 버튼에 현재 갤러리 ID·아이템 인덱스를 저장 (mousedown 시 curItem이 null이어도 동작)
+            // posOv는 curCfg/curItemIdx 설정 직후 호출되므로 항상 유효한 값이 존재
+            var btns = ov.querySelectorAll('[data-k]');
+            for (var bi = 0; bi < btns.length; bi++) {
+                btns[bi].dataset.gid = curCfg.id;
+                btns[bi].dataset.itemIdx = String(curItemIdx);
+            }
         }
         function hideOv() {
             var prevGid = curCfg ? curCfg.id : null;
@@ -1101,10 +1108,16 @@ def build_ui() -> gr.Blocks:
             setNativeValue(inp, idx + ':' + Date.now());
         }
         ov.addEventListener('mousedown', function(e) {
-            var btn = e.target.closest('[data-k]'); if (!btn || !curItem || !curCfg) return;
+            var btn = e.target.closest('[data-k]');
+            if (!btn) return;
             e.preventDefault(); e.stopPropagation();
+            // 버튼에 저장된 gid/itemIdx 우선 사용 (hover 상태가 해제된 후에도 안정적으로 동작)
+            var gid = btn.dataset.gid || (curCfg ? curCfg.id : '');
+            var idx = parseInt(btn.dataset.itemIdx, 10);
+            if (isNaN(idx) || idx < 0) idx = curItemIdx;
+            if (!gid || idx < 0) return;
             // overlay-dl/vid/ref textbox 에 값을 설정하여 .input() 핸들러 직접 트리거
-            triggerOverlayAction(curCfg.id, btn.dataset.k, curItemIdx);
+            triggerOverlayAction(gid, btn.dataset.k, idx);
         });
         window.addEventListener('scroll', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); }, true);
         window.addEventListener('resize', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); });
@@ -1330,7 +1343,11 @@ def build_ui() -> gr.Blocks:
     // ── 라이트박스 열릴 때 레퍼런스 이미지 패널 표시 ─────────────────────────
     (function() {
         var PANEL_ID = 'lb-ref-panel';
-        var DETAIL_IDS = ['detail-ref-gen', 'detail-ref-full'];
+        var pollTimer = null;
+        var pollCount = 0;
+        var MAX_POLLS = 17; // 300ms * 17 ≈ 5s
+        var lbOpen = false;
+        var pollInitialSrcs = null;
 
         function getLightbox() {
             // Gradio 6+: 라이트박스 이미지는 data-testid="detailed-image"
@@ -1343,7 +1360,7 @@ def build_ui() -> gr.Blocks:
         }
 
         function getRefImgUrls() {
-            // 우선: lb-ref-urls-state 텍스트박스에서 절대 경로 JSON을 읽어 Gradio 파일 URL 생성
+            // lb-ref-urls-state 텍스트박스에서 절대 경로 JSON을 읽어 Gradio 파일 URL 생성
             var el = document.getElementById('lb-ref-urls-state');
             if (el) {
                 var inp = el.querySelector('textarea, input[type="text"]');
@@ -1356,18 +1373,12 @@ def build_ui() -> gr.Blocks:
                     } catch(e) {}
                 }
             }
-            // 폴백: 상세 패널 갤러리 DOM에서 직접 img 태그 읽기
-            for (var i = 0; i < DETAIL_IDS.length; i++) {
-                var g = document.getElementById(DETAIL_IDS[i]);
-                if (!g) continue;
-                var imgs = Array.from(g.querySelectorAll('img')).filter(function(img) {
-                    return img.src
-                        && img.src.indexOf('data:') !== 0
-                        && img.src.indexOf('_placeholder') === -1;
-                });
-                if (imgs.length) return imgs.map(function(img) { return img.src; });
-            }
             return [];
+        }
+
+        function stopPolling() {
+            if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+            pollCount = 0;
         }
 
         function removePanel() {
@@ -1375,13 +1386,7 @@ def build_ui() -> gr.Blocks:
             if (p) p.remove();
         }
 
-        function updatePanel() {
-            var lb = getLightbox();
-            if (!lb) { removePanel(); return; }
-
-            var refUrls = getRefImgUrls();
-            if (!refUrls.length) { removePanel(); return; }
-
+        function renderPanel(lb, refUrls) {
             var panel = document.getElementById(PANEL_ID);
             if (!panel) {
                 panel = document.createElement('div');
@@ -1407,10 +1412,12 @@ def build_ui() -> gr.Blocks:
                 row.id = PANEL_ID + '-row';
                 row.style.cssText = 'display:flex;flex-direction:row;gap:8px;flex-wrap:wrap;justify-content:center;max-width:80vw;';
                 panel.appendChild(row);
-                document.body.appendChild(panel);
+                // 라이트박스 내부에 삽입 → 라이트박스 닫힐 때 패널도 자동 제거
+                lb.appendChild(panel);
             }
 
             var row = document.getElementById(PANEL_ID + '-row');
+            if (!row) return;
             var newSrcs = refUrls.join(',');
             if (row.dataset.srcs === newSrcs) return;
             row.dataset.srcs = newSrcs;
@@ -1418,14 +1425,51 @@ def build_ui() -> gr.Blocks:
             refUrls.forEach(function(src) {
                 var thumb = document.createElement('img');
                 thumb.src = src;
-                thumb.style.cssText = 'height:72px;max-width:120px;width:auto;object-fit:contain;border-radius:5px;background:rgba(255,255,255,0.06);';
+                // 레퍼런스 미리보기 썸네일과 동일한 크기 (256px 기준)
+                thumb.style.cssText = 'height:128px;max-width:220px;width:auto;object-fit:contain;border-radius:5px;background:rgba(255,255,255,0.06);';
                 row.appendChild(thumb);
             });
         }
 
-        // 라이트박스 열림/닫힘 및 레퍼런스 이미지 갱신을 단일 Observer로 감지
+        function pollForUrls() {
+            var lb = getLightbox();
+            if (!lb) { stopPolling(); lbOpen = false; return; }
+            var refUrls = getRefImgUrls();
+            var currentSrcs = JSON.stringify(refUrls);
+            // Python 핸들러가 완료되어 텍스트박스 값이 바뀐 경우에만 렌더링
+            if (currentSrcs !== pollInitialSrcs) {
+                if (refUrls.length) renderPanel(lb, refUrls);
+                else removePanel();
+                stopPolling();
+                return;
+            }
+            pollCount++;
+            if (pollCount >= MAX_POLLS) {
+                // 5초 타임아웃: 값이 바뀌지 않았으면 현재 값으로 폴백 표시
+                if (refUrls.length) renderPanel(lb, refUrls);
+                stopPolling();
+            }
+        }
+
+        function startPolling() {
+            stopPolling();
+            pollCount = 0;
+            removePanel();
+            // 폴링 시작 시점의 텍스트박스 값을 기록 (Python 핸들러 반환 감지용)
+            pollInitialSrcs = JSON.stringify(getRefImgUrls());
+            pollTimer = setInterval(pollForUrls, 300);
+        }
+
+        // 라이트박스 열림/닫힘을 단일 Observer로 감지
         new MutationObserver(function() {
-            updatePanel();
+            var lb = getLightbox();
+            if (lb && !lbOpen) {
+                lbOpen = true;
+                startPolling();
+            } else if (!lb && lbOpen) {
+                lbOpen = false;
+                stopPolling();
+            }
         }).observe(document.body, {childList: true, subtree: true});
     })();
 
