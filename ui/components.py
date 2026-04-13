@@ -1116,8 +1116,16 @@ def build_ui() -> gr.Blocks:
             var idx = parseInt(btn.dataset.itemIdx, 10);
             if (isNaN(idx) || idx < 0) idx = curItemIdx;
             if (!gid || idx < 0) return;
-            // overlay-dl/vid/ref textbox 에 값을 설정하여 .input() 핸들러 직접 트리거
-            triggerOverlayAction(gid, btn.dataset.k, idx);
+            // window.__ovIdx 를 설정하고 해당 주 버튼을 클릭 →
+            // 각 버튼의 js 핸들러가 __ovIdx 를 감지하여 올바른 인덱스로 동작
+            window.__ovIdx = idx;
+            for (var ci = 0; ci < CFGS.length; ci++) {
+                if (CFGS[ci].id === gid) {
+                    var btnId = CFGS[ci][btn.dataset.k];
+                    if (btnId) gClick(btnId);
+                    break;
+                }
+            }
         });
         window.addEventListener('scroll', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); }, true);
         window.addEventListener('resize', function() { if (curItem && ov.style.display !== 'none') posOv(curItem); });
@@ -1426,7 +1434,7 @@ def build_ui() -> gr.Blocks:
                 var thumb = document.createElement('img');
                 thumb.src = src;
                 // 레퍼런스 미리보기 썸네일과 동일한 크기 (256px 기준)
-                thumb.style.cssText = 'height:128px;max-width:220px;width:auto;object-fit:contain;border-radius:5px;background:rgba(255,255,255,0.06);';
+                thumb.style.cssText = 'height:64px;max-width:96px;width:auto;object-fit:contain;border-radius:5px;background:rgba(255,255,255,0.06);';
                 row.appendChild(thumb);
             });
         }
@@ -2049,7 +2057,7 @@ def build_ui() -> gr.Blocks:
                                     ref_abs_paths.append(abs_p)
                             except (OSError, ValueError):
                                 pass
-                    return idx, ref_imgs, gr.update(visible=has_refs), json.dumps(ref_abs_paths)
+                    return idx, ref_imgs, gr.update(visible=False), json.dumps(ref_abs_paths)
 
                 live_gallery.select(
                     on_gen_gallery_select,
@@ -2463,7 +2471,7 @@ def build_ui() -> gr.Blocks:
                                     ref_abs_paths.append(abs_p)
                             except (OSError, ValueError):
                                 pass
-                    return idx, ref_imgs, gr.update(visible=has_refs), json.dumps(ref_abs_paths)
+                    return idx, ref_imgs, gr.update(visible=False), json.dumps(ref_abs_paths)
 
                 full_gallery.select(
                     on_gallery_tab_select,
