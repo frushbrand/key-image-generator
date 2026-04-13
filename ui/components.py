@@ -921,7 +921,7 @@ def build_ui() -> gr.Blocks:
         // thumbs/ 서브폴더 경로를 원본 경로로 변환
         // 예: /gradio_api/file=/path/outputs/2026-04-09/thumbs/file.png
         //  → /gradio_api/file=/path/outputs/2026-04-09/file.png
-        return src.replace(/\/thumbs\/([^/?]+)(\?|$)/, '/$1$2');
+        return src.replace(new RegExp('/thumbs/([^/?]+)([?]|$)'), '/$1$2');
     }
 
     // ── 공통 헬퍼: Gradio/Svelte 감지 가능한 네이티브 값 설정 ────────────────
@@ -1079,7 +1079,7 @@ def build_ui() -> gr.Blocks:
             var origSrc = thumbSrcToOriginalSrc(img.src);
             var rawSrc = decodeURIComponent(origSrc);
             var filename = rawSrc.split('=').pop().split('/').pop().split('?')[0];
-            if (!filename || !filename.match(/\.(png|jpg|jpeg|webp|gif)$/i)) filename = 'image.png';
+            if (!filename || !filename.match(new RegExp('[.](png|jpg|jpeg|webp|gif)$', 'i'))) filename = 'image.png';
             var a = document.createElement('a');
             a.href = origSrc;
             a.download = filename;
@@ -1450,7 +1450,7 @@ def build_ui() -> gr.Blocks:
         function extractPrompt(fullText) {
             // 캡션 형식: "#N | model | ratio | quality\\nprompt text"
             // 첫 번째 줄바꿈 이후가 프롬프트 텍스트
-            var nl = fullText.indexOf('\n');
+            var nl = fullText.indexOf('\\n');
             return (nl >= 0 ? fullText.slice(nl + 1) : fullText).trim();
         }
 
