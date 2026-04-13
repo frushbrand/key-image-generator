@@ -845,12 +845,14 @@ def build_ui() -> gr.Blocks:
 
         return gr.update(value=current_paths + [item.image_path])
 
-    def _use_as_ref_selected(selected_json: str, current_files: list):
+    def _use_as_ref_selected(selected_json: str, current_files: list, current_idx: int = -1):
         """체크박스로 선택된 이미지들을 레퍼런스 이미지 업로드 칸에 추가."""
         try:
             indices = json.loads(selected_json or "[]")
         except (json.JSONDecodeError, ValueError):
             indices = []
+        if not indices and current_idx >= 0:
+            indices = [current_idx]
         if not indices:
             gr.Warning("레퍼런스로 추가할 이미지를 먼저 선택해주세요.")
             return gr.update()
@@ -934,11 +936,12 @@ def build_ui() -> gr.Blocks:
     // ── 공통 헬퍼: 갤러리 썸네일 항목 취득 (Gradio 버전별 선택자 자동 탐색) ──
     // Gradio 5.x 버전에 따라 data-testid, 클래스명이 달라질 수 있으므로 다중 선택자를 순차 시도
     var _THUMB_SELS = [
+        '.gallery-item',
+        '[data-testid^="thumbnail"]',
         '[data-testid="thumbnail"]',
         '.thumbnail-item',
         '[class*="thumbnail-item"]',
         'button[class*="thumbnail"]',
-        '.gallery-item',
         '[data-testid="gallery-item"]'
     ];
     // 갤러리 컨테이너 내 모든 썸네일 요소 배열 반환
@@ -947,20 +950,46 @@ def build_ui() -> gr.Blocks:
         if (!g) return [];
         for (var i = 0; i < _THUMB_SELS.length; i++) {
             try {
-                var r = Array.from(g.querySelectorAll(_THUMB_SELS[i]));
+                var r = Array.from(g.querySelectorAll(_THUMB_SELS[i]))
+                    .filter(function(el) { return !el.closest('.preview'); });
                 if (r.length) return r;
             } catch(e) {}
         }
+        // 최종 폴백: gallery-container 직접 자식 div 또는 img를 포함하는 button
+        try {
+            var gc = g.querySelector('.gallery-container, [class*="gallery-container"]');
+            if (gc) {
+                var kids = Array.from(gc.children).filter(function(c) {
+                    return c.querySelector('img') && !c.classList.contains('preview');
+                });
+                if (kids.length) return kids;
+            }
+        } catch(e) {}
+        try {
+            var btns = Array.from(g.querySelectorAll('button'));
+            var imgBtns = btns.filter(function(b) { return b.querySelector('img') && !b.closest('.preview'); });
+            if (imgBtns.length) return imgBtns;
+        } catch(e) {}
         return [];
     };
     // 주어진 요소의 조상 중 썸네일 요소 반환 (closest 방식)
     window.__getGalleryItem = function(el) {
+        if (el.closest && el.closest('.preview')) return null;  // 라이트박스 내부 요소 제외
         for (var i = 0; i < _THUMB_SELS.length; i++) {
             try {
                 var r = el.closest(_THUMB_SELS[i]);
                 if (r) return r;
             } catch(e) {}
         }
+        // 최종 폴백: gallery-container 직접 자식 중 img를 포함하는 요소
+        try {
+            var gc = el.closest('.gallery-container, [class*="gallery-container"]');
+            if (gc) {
+                var cur = el;
+                while (cur && cur.parentElement !== gc) cur = cur.parentElement;
+                if (cur && cur.parentElement === gc && cur.querySelector('img')) return cur;
+            }
+        } catch(e) {}
         return null;
     };
 
@@ -1042,10 +1071,7 @@ def build_ui() -> gr.Blocks:
 
         // 갤러리 img src에서 직접 파일 다운로드 (썸네일 → 원본 경로로 변환 후 다운로드)
         function downloadFromGallery(gid, idx) {
-            var g = document.getElementById(gid); if (!g) return false;
-            var items = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
-            if (!items.length) items = Array.from(g.querySelectorAll('.thumbnail-item'));
-            if (!items.length) items = Array.from(g.querySelectorAll('[class*="thumbnail-item"]'));
+            var items = window.__getGalleryItems(gid);
             var item = items[idx]; if (!item) return false;
             var img = item.querySelector('img');
             if (!img || !img.src || img.src.indexOf('data:') === 0) return false;
@@ -2001,9 +2027,9 @@ def build_ui() -> gr.Blocks:
 
                 btn_use_as_ref_gen.click(
                     _use_as_ref_selected,
-                    inputs=[ms_state_gen, ref_image_upload],
+                    inputs=[ms_state_gen, ref_image_upload, selected_img_idx_gen],
                     outputs=[ref_image_upload],
-                    js="(ms, files) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : -1; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), files] : [window.__getSelJson('live-gallery', ms), files]; }",
+                    js="(ms, files, idx) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : idx; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), files, oi] : [window.__getSelJson('live-gallery', ms), files, oi]; }",
                 )
 
                 delete_gen_fn = build_delete_selected_fn(gallery_state)
@@ -2410,9 +2436,9 @@ def build_ui() -> gr.Blocks:
 
                 btn_use_as_ref_gallery.click(
                     _use_as_ref_selected,
-                    inputs=[ms_state_gallery, ref_image_upload],
+                    inputs=[ms_state_gallery, ref_image_upload, selected_img_idx_gallery],
                     outputs=[ref_image_upload],
-                    js="(ms, files) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : -1; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), files] : [window.__getSelJson('full-gallery', ms), files]; }",
+                    js="(ms, files, idx) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : idx; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), files, oi] : [window.__getSelJson('full-gallery', ms), files, oi]; }",
                 )
 
                 delete_gallery_fn = build_delete_selected_fn(gallery_state)
