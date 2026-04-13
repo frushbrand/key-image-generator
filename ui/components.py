@@ -931,6 +931,39 @@ def build_ui() -> gr.Blocks:
         inp.dispatchEvent(new Event('change', {bubbles: true}));
     }
 
+    // ── 공통 헬퍼: 갤러리 썸네일 항목 취득 (Gradio 버전별 선택자 자동 탐색) ──
+    // Gradio 5.x 버전에 따라 data-testid, 클래스명이 달라질 수 있으므로 다중 선택자를 순차 시도
+    var _THUMB_SELS = [
+        '[data-testid="thumbnail"]',
+        '.thumbnail-item',
+        '[class*="thumbnail-item"]',
+        'button[class*="thumbnail"]',
+        '.gallery-item',
+        '[data-testid="gallery-item"]'
+    ];
+    // 갤러리 컨테이너 내 모든 썸네일 요소 배열 반환
+    window.__getGalleryItems = function(containerId) {
+        var g = document.getElementById(containerId);
+        if (!g) return [];
+        for (var i = 0; i < _THUMB_SELS.length; i++) {
+            try {
+                var r = Array.from(g.querySelectorAll(_THUMB_SELS[i]));
+                if (r.length) return r;
+            } catch(e) {}
+        }
+        return [];
+    };
+    // 주어진 요소의 조상 중 썸네일 요소 반환 (closest 방식)
+    window.__getGalleryItem = function(el) {
+        for (var i = 0; i < _THUMB_SELS.length; i++) {
+            try {
+                var r = el.closest(_THUMB_SELS[i]);
+                if (r) return r;
+            } catch(e) {}
+        }
+        return null;
+    };
+
     // ── 갤러리 호버 플로팅 오버레이 ─────────────────────────────────────────
     (function() {
         var CFGS = [
@@ -976,18 +1009,8 @@ def build_ui() -> gr.Blocks:
             }
             return null;
         }
-        function itemOf(el) {
-            return el.closest('[data-testid="thumbnail"]')
-                || el.closest('.thumbnail-item')
-                || el.closest('[class*="thumbnail-item"]');
-        }
-        function getItems(cfg) {
-            var g = document.getElementById(cfg.id); if (!g) return [];
-            var r = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
-            if (!r.length) r = Array.from(g.querySelectorAll('.thumbnail-item'));
-            if (!r.length) r = Array.from(g.querySelectorAll('[class*="thumbnail-item"]'));
-            return r;
-        }
+        function itemOf(el) { return window.__getGalleryItem(el); }
+        function getItems(cfg) { return window.__getGalleryItems(cfg.id); }
         function posOv(item) {
             var r = item.getBoundingClientRect();
             ov.style.left = r.left + 'px'; ov.style.top = r.top + 'px';
@@ -1116,13 +1139,7 @@ def build_ui() -> gr.Blocks:
                 badge.style.opacity = (isSelected || isHovered) ? '1' : '0';
             }
         }
-        function getItems(gid) {
-            var g = document.getElementById(gid); if (!g) return [];
-            var r = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
-            if (!r.length) r = Array.from(g.querySelectorAll('.thumbnail-item'));
-            if (!r.length) r = Array.from(g.querySelectorAll('[class*="thumbnail-item"]'));
-            return r;
-        }
+        function getItems(gid) { return window.__getGalleryItems(gid); }
         function getContainer(gid) {
             if (!containers[gid]) {
                 var c = document.createElement('div');
@@ -1180,16 +1197,22 @@ def build_ui() -> gr.Blocks:
             });
         }
         var obs = new MutationObserver(function() { GIDS.forEach(refreshOverlays); });
+        var _attached = {};
         function attachObs() {
+            // 갤러리 요소가 아직 DOM에 없으면 500ms 후 재시도 (탭 지연 렌더링 대응)
+            var allDone = true;
             GIDS.forEach(function(gid) {
+                if (_attached[gid]) return;
                 var g = document.getElementById(gid);
-                if (g) obs.observe(g, {childList: true, subtree: true});
+                if (g) { obs.observe(g, {childList: true, subtree: true}); _attached[gid] = true; }
+                else allDone = false;
             });
+            GIDS.forEach(refreshOverlays);
+            if (!allDone) setTimeout(attachObs, 500);
         }
         window.addEventListener('scroll', function() { GIDS.forEach(refreshOverlays); }, true);
         window.addEventListener('resize', function() { GIDS.forEach(refreshOverlays); });
-        setTimeout(attachObs, 800);
-        setTimeout(function() { GIDS.forEach(refreshOverlays); }, 1500);
+        setTimeout(attachObs, 300);
     })();
 
     // ── 다중 선택 모드에서 썸네일 클릭 시 라이트박스 차단 → 체크박스 토글 ────
@@ -1204,18 +1227,8 @@ def build_ui() -> gr.Blocks:
             }
             return null;
         }
-        function itemOf(el) {
-            return el.closest('[data-testid="thumbnail"]')
-                || el.closest('.thumbnail-item')
-                || el.closest('[class*="thumbnail-item"]');
-        }
-        function getItems(gid) {
-            var g = document.getElementById(gid); if (!g) return [];
-            var r = Array.from(g.querySelectorAll('[data-testid="thumbnail"]'));
-            if (!r.length) r = Array.from(g.querySelectorAll('.thumbnail-item'));
-            if (!r.length) r = Array.from(g.querySelectorAll('[class*="thumbnail-item"]'));
-            return r;
-        }
+        function itemOf(el) { return window.__getGalleryItem(el); }
+        function getItems(gid) { return window.__getGalleryItems(gid); }
         document.addEventListener('click', function(e) {
             var ov = document.getElementById('gha-ov');
             if (ov && ov.contains(e.target)) return;
@@ -1533,20 +1546,22 @@ def build_ui() -> gr.Blocks:
                 }
                 // 위젯을 시각적으로 숨김
                 wrap.style.display = 'none';
-                // 파일 링크 생성 시 자동으로 다운로드 트리거
+                // 파일 링크 생성 시 자동으로 다운로드 트리거 (_lastDlHref 비교로 중복 방지)
+                var _lastDlHref = '';
                 new MutationObserver(function() {
                     var link = wrap.querySelector('a[href]');
-                    if (link && link.href && !link.dataset.autoTriggered) {
-                        link.dataset.autoTriggered = '1';
-                        var a = document.createElement('a');
-                        a.href = link.href;
-                        a.download = link.download || '';
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        setTimeout(function() { link.removeAttribute('data-auto-triggered'); }, 3000);
-                    }
-                }).observe(wrap, {childList: true, subtree: true, attributes: true, attributeFilter: ['href']});
+                    if (!link || !link.href || link.href === _lastDlHref) return;
+                    _lastDlHref = link.href;
+                    var a = document.createElement('a');
+                    a.href = link.href;
+                    // download 속성 우선, 없으면 URL에서 파일명 추출
+                    var fname = link.getAttribute('download') || link.href.split('/').pop().split('?')[0] || '';
+                    a.download = fname;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    setTimeout(function() { _lastDlHref = ''; }, 5000);
+                }).observe(wrap, {childList: true, subtree: true, attributes: true});
             })();
         });
     })();
