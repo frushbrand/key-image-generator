@@ -52,13 +52,14 @@ from core.image_utils import (
     save_video,
     create_zip_from_paths,
     get_thumbnail_path,
+    get_video_thumbnail_path,
     PLACEHOLDER_IMAGE_PATH,
     ensure_placeholder_image,
     load_existing_outputs,
     load_existing_video_outputs,
     get_disk_usage_text,
 )
-from ui.gallery import GalleryState, GalleryItem
+from ui.gallery import GalleryState, GalleryItem, VideoGalleryState, VideoGalleryItem
 
 
 # ── 앱 테마 및 CSS (Gradio 6.0+: launch()에 전달) ───────────────────────────
@@ -226,15 +227,16 @@ APP_CSS = """
            JS에서 접근해야 하는 컴포넌트는 visible=True + CSS hidden 방식 사용 */
         #single-png-gen, #selected-zip-gen,
         #single-png-gallery, #full-zip-gallery, #selected-zip-gallery,
-        #selected-videos-zip, #all-videos-zip {
+        #single-video-gen, #selected-videos-zip-gen {
             display: none !important;
         }
         /* 내부 상태/트리거 텍스트박스: display:none 대신 화면 밖 배치 사용
            display:none 시 Gradio 5 Svelte 이벤트 파이프라인이 synthetic event를
            처리하지 않아 Python 핸들러가 트리거되지 않음 */
-        #ms-state-gen, #ms-state-gallery,
+        #ms-state-gen, #ms-state-gallery, #ms-state-video,
         #overlay-dl-gen, #overlay-vid-gen, #overlay-ref-gen,
         #overlay-dl-gallery, #overlay-vid-gallery, #overlay-ref-gallery,
+        #overlay-dl-video,
         #lb-ref-urls-state {
             position: absolute !important;
             left: -9999px !important;
@@ -396,7 +398,7 @@ def on_save_kling_keys(access_key: str, secret_key: str):
     return "💾 Kling API 키가 저장되었습니다."
 
 
-def build_unified_video_fn(gallery_state: GalleryState):
+def build_unified_video_fn(gallery_state: GalleryState, video_gallery_state: "VideoGalleryState"):
     """레퍼런스 이미지 / 시작-끝 프레임 / 영상 레퍼런스 / 텍스트 모드를 통합 처리하는 핸들러 팩토리"""
 
     def generate_video(
@@ -425,12 +427,22 @@ def build_unified_video_fn(gallery_state: GalleryState):
         # 선택한 화질로 모드 결정 (기본값은 모델별 기본 모드)
         mode_api = KLING_QUALITY_OPTIONS.get(kling_quality, model_cfg["mode"])
 
+        # 영상 갤러리에 pending 슬롯 사전 할당
+        gallery_index = video_gallery_state.allocate_pending_item(
+            model=model_label,
+            prompt=prompt or "",
+            ratio=aspect_ratio,
+            quality=kling_quality,
+            duration=int(duration),
+        )
+
         progress(0.05, desc="영상 생성 작업 요청 중...")
         endpoint = "image2video"
 
         try:
             if mode == "start_end":
                 if start_image is None or end_image is None:
+                    video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", "시작/끝 프레임 없음")
                     return None, "❌ 시작 프레임과 끝 프레임을 모두 업로드해주세요."
                 start_pil = (
                     start_image if isinstance(start_image, Image.Image)
@@ -449,6 +461,7 @@ def build_unified_video_fn(gallery_state: GalleryState):
                 )
             elif mode == "video_ref":
                 if ref_video is None:
+                    video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", "레퍼런스 영상 없음")
                     return None, "❌ 레퍼런스 영상을 업로드해주세요."
                 video_path = ref_video if isinstance(ref_video, str) else str(ref_video)
                 task_id = create_video_reference_task(
@@ -463,6 +476,7 @@ def build_unified_video_fn(gallery_state: GalleryState):
                 # 레퍼런스 이미지 모드 — 이미지가 없으면 텍스트 투 비디오로 대체
                 if ref_image is None:
                     if not (prompt or "").strip():
+                        video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", "프롬프트 없음")
                         return None, "❌ 레퍼런스 이미지가 없으면 프롬프트를 입력해주세요."
                     progress(0.05, desc="텍스트→영상 작업 요청 중...")
                     task_id = create_text_to_video_task(
@@ -485,6 +499,7 @@ def build_unified_video_fn(gallery_state: GalleryState):
                         mode=mode_api, enable_audio=enable_audio,
                     )
         except Exception as e:
+            video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", str(e))
             return None, f"❌ 작업 생성 실패: {e}"
 
         progress(0.15, desc=f"대기 중... (task_id: {task_id[:8]}…)")
@@ -507,19 +522,25 @@ def build_unified_video_fn(gallery_state: GalleryState):
             # 폴링 완료 후 실제 소요 시간 기록
             record_video_generation(model_label, _time.time() - poll_start_time)
         except TimeoutError as e:
+            video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", str(e))
             return None, f"⏱️ {e}"
         except Exception as e:
+            video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", str(e))
             return None, f"❌ 생성 실패: {e}"
 
         progress(0.97, desc="영상 다운로드 중...")
         try:
             video_bytes = download_video(video_url)
         except Exception as e:
+            video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", str(e))
             return None, f"❌ 영상 다운로드 실패: {e}"
 
-        video_path = save_video(video_bytes, model_label, prompt or "")
+        saved_video_path, thumb_path = save_video(video_bytes, model_label, prompt or "")
+        video_gallery_state.fill_pending_item(
+            gallery_index, saved_video_path, thumb_path, "success"
+        )
         progress(1.0, desc="완료!")
-        return video_path, f"✅ 영상 생성 완료! 저장 위치: {video_path}"
+        return saved_video_path, f"✅ 영상 생성 완료! 저장 위치: {saved_video_path}"
 
     return generate_video
 
@@ -828,6 +849,23 @@ def build_ui() -> gr.Blocks:
             )
         )
 
+    # 기존 outputs/ 디렉토리의 영상을 영상 갤러리 상태에 로드
+    video_gallery_state = VideoGalleryState()
+    for i, entry in enumerate(load_existing_video_outputs()):
+        video_gallery_state.add(
+            VideoGalleryItem(
+                video_path=entry["path"],
+                thumbnail_path=entry.get("thumbnail_path", PLACEHOLDER_IMAGE_PATH),
+                model=entry["model"],
+                prompt=entry["prompt"],
+                ratio="",
+                quality="",
+                duration=0,
+                index=i,
+                status="success",
+            )
+        )
+
     def _use_as_ref(idx: int, current_files: list):
         """선택된 이미지를 레퍼런스 이미지 업로드 칸에 추가하는 공용 핸들러."""
         item = gallery_state.get_success_item_by_visual_index(idx)
@@ -996,8 +1034,9 @@ def build_ui() -> gr.Blocks:
     // ── 갤러리 호버 플로팅 오버레이 ─────────────────────────────────────────
     (function() {
         var CFGS = [
-            {id:'live-gallery', dl:'btn-download-gen',     vid:'btn-video-gen',     ref:'btn-ref-gen'},
-            {id:'full-gallery', dl:'btn-download-gallery', vid:'btn-video-gallery', ref:'btn-ref-gallery'}
+            {id:'live-gallery', dl:'btn-download-gen',     vid:'btn-video-gen',     ref:'btn-ref-gen',     btns:['dl','vid','ref']},
+            {id:'full-gallery', dl:'btn-download-gallery', vid:'btn-video-gallery', ref:'btn-ref-gallery', btns:['dl','vid','ref']},
+            {id:'video-gallery', dl:'btn-download-video', btns:['dl']}
         ];
 
         // body 최상위에 단일 플로팅 오버레이 생성 (갤러리 아이템 DOM 수정 없음)
@@ -1047,10 +1086,12 @@ def build_ui() -> gr.Blocks:
             ov.style.display = 'flex';
             // 각 버튼에 현재 갤러리 ID·아이템 인덱스를 저장 (mousedown 시 curItem이 null이어도 동작)
             // posOv는 curCfg/curItemIdx 설정 직후 호출되므로 항상 유효한 값이 존재
+            var visibleBtns = curCfg.btns || ['dl','vid','ref'];
             var btns = ov.querySelectorAll('[data-k]');
             for (var bi = 0; bi < btns.length; bi++) {
                 btns[bi].dataset.gid = curCfg.id;
                 btns[bi].dataset.itemIdx = String(curItemIdx);
+                btns[bi].style.display = visibleBtns.indexOf(btns[bi].dataset.k) >= 0 ? 'flex' : 'none';
             }
         }
         function hideOv() {
@@ -1099,7 +1140,8 @@ def build_ui() -> gr.Blocks:
         function triggerOverlayAction(gid, key, idx) {
             var tbMap = {
                 'live-gallery': {dl:'overlay-dl-gen', vid:'overlay-vid-gen', ref:'overlay-ref-gen'},
-                'full-gallery': {dl:'overlay-dl-gallery', vid:'overlay-vid-gallery', ref:'overlay-ref-gallery'}
+                'full-gallery': {dl:'overlay-dl-gallery', vid:'overlay-vid-gallery', ref:'overlay-ref-gallery'},
+                'video-gallery': {dl:'overlay-dl-video'}
             };
             var tbId = tbMap[gid] && tbMap[gid][key]; if (!tbId) return;
             var wrapper = document.getElementById(tbId); if (!wrapper) return;
@@ -1133,8 +1175,8 @@ def build_ui() -> gr.Blocks:
 
     // ── 다중 선택 (호버 시 체크박스 표시, 선택 시 항상 표시) ────────────────
     (function() {
-        var GIDS = ['live-gallery', 'full-gallery'];
-        var TBIDS = {'live-gallery': 'ms-state-gen', 'full-gallery': 'ms-state-gallery'};
+        var GIDS = ['live-gallery', 'full-gallery', 'video-gallery'];
+        var TBIDS = {'live-gallery': 'ms-state-gen', 'full-gallery': 'ms-state-gallery', 'video-gallery': 'ms-state-video'};
         var sels = {}, containers = {};
         var hoverGid = null, hoverIdx = -1;
         GIDS.forEach(function(id) { sels[id] = new Set(); containers[id] = null; });
@@ -1255,7 +1297,7 @@ def build_ui() -> gr.Blocks:
     // ── 다중 선택 모드에서 썸네일 클릭 시 라이트박스 차단 → 체크박스 토글 ────
     (function() {
         var CFGS = [
-            {id:'live-gallery'}, {id:'full-gallery'}
+            {id:'live-gallery'}, {id:'full-gallery'}, {id:'video-gallery'}
         ];
         function cfgOf(el) {
             for (var i = 0; i < CFGS.length; i++) {
@@ -1603,7 +1645,7 @@ def build_ui() -> gr.Blocks:
 
     // ── 다운로드 파일 위젯 자동 실행 (별도 창 없이 바로 다운로드) ──────────
     (function() {
-        var DL_IDS = ['single-png-gen', 'selected-zip-gen', 'single-png-gallery', 'selected-zip-gallery', 'full-zip-gallery', 'selected-videos-zip', 'all-videos-zip'];
+        var DL_IDS = ['single-png-gen', 'selected-zip-gen', 'single-png-gallery', 'selected-zip-gallery', 'full-zip-gallery', 'single-video-gen', 'selected-videos-zip-gen'];
         DL_IDS.forEach(function(id) {
             var attempts = 0;
             (function trySetup() {
@@ -2227,37 +2269,51 @@ def build_ui() -> gr.Blocks:
                             value="대기 중",
                         )
 
-                gr.Markdown("### 🎥 생성된 영상")
-                video_output = gr.Video(label="최근 생성 결과", height=480)
-
-                # ── 결과물 관리 창 ────────────────────────────────────────────
-                gr.Markdown("### 📹 결과물 관리")
-                gr.Markdown("💡 생성된 영상 목록에서 항목을 선택하여 재생하거나 ZIP으로 다운로드할 수 있습니다.")
-                existing_videos = load_existing_video_outputs()
-                _vid_choices = [(v["label"], v["path"]) for v in existing_videos]
+                gr.Markdown("### 🎥 생성 결과")
+                gr.Markdown("💡 영상 썸네일 위에 마우스를 올리면 다운로드 버튼이 나타납니다. 여러 개를 선택하려면 왼쪽 위 체크박스를 클릭하세요. 썸네일을 클릭하면 아래 영상 플레이어에서 재생됩니다.")
 
                 with gr.Row():
                     btn_refresh_videos = gr.Button("🔄 새로고침", variant="secondary", scale=1)
-                    btn_download_selected_videos = gr.Button(
-                        "📦 선택 ZIP", variant="secondary", scale=1
+                    btn_select_all_video = gr.Button("☑️ 전체 선택/해제", variant="secondary", scale=1)
+                    btn_download_single_video = gr.Button(
+                        "📥 다운로드 (단일 MP4 / 다중 선택 시 ZIP)",
+                        variant="secondary",
+                        scale=2,
+                        elem_id="btn-download-video",
                     )
-                    btn_download_all_videos = gr.Button(
-                        "⬇️ 전체 ZIP", variant="secondary", scale=1
+                    btn_delete_video = gr.Button(
+                        "🗑️ 선택 삭제",
+                        variant="stop",
+                        scale=1,
                     )
-                video_gallery_dropdown = gr.Dropdown(
-                    choices=_vid_choices,
-                    label="생성된 영상 목록 (최신순) — 항목 선택 시 아래에서 재생, 여러 항목 선택 후 ZIP 다운로드 가능",
-                    multiselect=True,
-                    interactive=True,
-                    value=None,
+
+                video_gallery = gr.Gallery(
+                    label="생성된 영상",
+                    columns=4,
+                    height=600,
+                    object_fit="contain",
+                    value=video_gallery_state.to_gradio_gallery(),
+                    elem_id="video-gallery",
                 )
-                video_gallery_player = gr.Video(
+
+                video_player = gr.Video(
                     label="선택한 영상 재생",
                     height=480,
-                    visible=bool(_vid_choices),
+                    visible=False,
                 )
-                selected_videos_zip_output = gr.File(label="선택 영상 ZIP 다운로드", elem_id="selected-videos-zip")
-                all_videos_zip_output = gr.File(label="전체 영상 ZIP 다운로드", elem_id="all-videos-zip")
+
+                video_timer = gr.Timer(value=2, active=False)
+                single_video_output = gr.File(label="MP4 다운로드", elem_id="single-video-gen")
+                selected_videos_zip_output_gen = gr.File(label="선택 영상 ZIP 다운로드", elem_id="selected-videos-zip-gen")
+                ms_state_video = gr.Textbox(
+                    value="[]",
+                    elem_id="ms-state-video",
+                    interactive=True,
+                )
+                selected_vid_idx = gr.State(-1)
+                overlay_dl_video = gr.Textbox(elem_id="overlay-dl-video", interactive=True)
+
+                # ── 이벤트 핸들러 등록 ─────────────────────────────────────────
 
                 def _on_kling_model_change(model_label: str):
                     """Omni 모델(supports_video_reference=True)에서만 영상 레퍼런스 탭 표시"""
@@ -2277,7 +2333,7 @@ def build_ui() -> gr.Blocks:
                 kling_prompt_input.change(_save_gen_setting("video_prompt"), inputs=[kling_prompt_input])
                 enable_audio_checkbox.change(_save_gen_setting("video_enable_audio"), inputs=[enable_audio_checkbox])
 
-                unified_video_fn = build_unified_video_fn(gallery_state)
+                unified_video_fn = build_unified_video_fn(gallery_state, video_gallery_state)
                 btn_generate_video.click(
                     unified_video_fn,
                     inputs=[
@@ -2293,75 +2349,145 @@ def build_ui() -> gr.Blocks:
                         enable_audio_checkbox,
                         kling_quality_dropdown,
                     ],
-                    outputs=[video_output, video_status],
+                    outputs=[video_player, video_status],
                 ).then(
-                    lambda: (
-                        gr.update(
-                            choices=[(v["label"], v["path"]) for v in load_existing_video_outputs()],
-                            value=None,
-                        ),
-                        gr.update(visible=True),
-                    ),
-                    outputs=[video_gallery_dropdown, video_gallery_player],
+                    lambda: (gr.update(active=True), gr.update(visible=True)),
+                    outputs=[video_timer, video_player],
                 )
 
-                def on_video_gallery_select(paths):
-                    if not paths:
-                        return gr.update(value=None, visible=False)
-                    path = paths[0] if isinstance(paths, list) else paths
-                    if path and _is_safe_output_path(path) and os.path.exists(path):
-                        return gr.update(value=path, visible=True)
-                    return gr.update(value=None, visible=False)
+                def on_video_gallery_select(evt: gr.SelectData):
+                    idx = evt.index
+                    item = video_gallery_state.get_item_by_visual_index(idx)
+                    if item is None:
+                        return idx, gr.update(value=None, visible=False)
+                    if _is_safe_output_path(item.video_path) and os.path.exists(item.video_path):
+                        return idx, gr.update(value=item.video_path, visible=True)
+                    return idx, gr.update(value=None, visible=False)
 
-                video_gallery_dropdown.change(
+                video_gallery.select(
                     on_video_gallery_select,
-                    inputs=[video_gallery_dropdown],
-                    outputs=[video_gallery_player],
+                    outputs=[selected_vid_idx, video_player],
                 )
 
-                def refresh_video_gallery():
-                    videos = load_existing_video_outputs()
-                    choices = [(v["label"], v["path"]) for v in videos]
-                    return gr.update(choices=choices, value=None), gr.update(visible=bool(choices))
+                def poll_video_gallery_state():
+                    if not video_gallery_state.has_pending():
+                        return gr.update(), gr.update(), gr.update(active=False)
+                    return (
+                        video_gallery_state.to_gradio_gallery(),
+                        video_gallery_state.get_summary(),
+                        gr.update(),
+                    )
+
+                video_timer.tick(poll_video_gallery_state, outputs=[video_gallery, video_status, video_timer])
+
+                def refresh_video_gallery_fn():
+                    return (
+                        video_gallery_state.to_gradio_gallery(),
+                        video_gallery_state.get_summary(),
+                    )
 
                 btn_refresh_videos.click(
-                    refresh_video_gallery,
-                    outputs=[video_gallery_dropdown, video_gallery_player],
+                    refresh_video_gallery_fn,
+                    outputs=[video_gallery, video_status],
                 )
 
-                def download_selected_videos(paths):
-                    if not paths:
-                        gr.Warning("다운로드할 영상을 선택해주세요.")
-                        return None
-                    existing = [
-                        p for p in paths
-                        if p and _is_safe_output_path(p) and os.path.exists(p)
-                    ]
-                    if not existing:
-                        gr.Warning("선택한 영상 파일을 찾을 수 없습니다.")
-                        return None
-                    return create_zip_from_paths(existing)
+                def smart_download_video(selected_json: str, current_idx: int):
+                    """단일 선택 → MP4, 다중 선택 → ZIP 스마트 다운로드"""
+                    try:
+                        indices = json.loads(selected_json or "[]")
+                    except (json.JSONDecodeError, ValueError):
+                        indices = []
 
-                btn_download_selected_videos.click(
-                    download_selected_videos,
-                    inputs=[video_gallery_dropdown],
-                    outputs=[selected_videos_zip_output],
+                    if len(indices) > 1:
+                        paths = []
+                        for raw_idx in indices:
+                            try:
+                                item = video_gallery_state.get_item_by_visual_index(int(raw_idx))
+                                if item and item.video_path and os.path.exists(item.video_path):
+                                    paths.append(item.video_path)
+                            except (ValueError, TypeError):
+                                continue
+                        if not paths:
+                            gr.Warning("선택된 영상 파일을 찾을 수 없습니다.")
+                            return None
+                        return create_zip_from_paths(paths)
+                    elif len(indices) == 1:
+                        try:
+                            item = video_gallery_state.get_item_by_visual_index(int(indices[0]))
+                        except (ValueError, TypeError):
+                            item = None
+                    else:
+                        item = video_gallery_state.get_item_by_visual_index(current_idx)
+
+                    if item is None:
+                        gr.Warning("영상을 먼저 클릭하여 선택해주세요.")
+                        return None
+                    if not item.video_path or not os.path.exists(item.video_path):
+                        gr.Warning("영상 파일을 찾을 수 없습니다.")
+                        return None
+                    return item.video_path
+
+                btn_download_single_video.click(
+                    smart_download_video,
+                    inputs=[ms_state_video, selected_vid_idx],
+                    outputs=[single_video_output],
+                    js="(ms, idx) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : idx; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), oi] : [window.__getSelJson('video-gallery', ms), oi]; }",
                 )
 
-                def download_all_videos():
-                    videos = load_existing_video_outputs()
-                    paths = [
-                        v["path"] for v in videos
-                        if v.get("path") and _is_safe_output_path(v["path"]) and os.path.exists(v["path"])
-                    ]
-                    if not paths:
-                        gr.Warning("다운로드할 영상이 없습니다.")
-                        return None
-                    return create_zip_from_paths(paths)
+                def delete_selected_videos(selected_json: str, current_idx: int):
+                    try:
+                        indices = json.loads(selected_json or "[]")
+                    except (json.JSONDecodeError, ValueError):
+                        indices = []
+                    if not indices and current_idx >= 0:
+                        indices = [current_idx]
+                    if not indices:
+                        gr.Warning("삭제할 영상을 먼저 선택해주세요.")
+                        return (
+                            video_gallery_state.to_gradio_gallery(),
+                            video_gallery_state.get_summary(),
+                            "[]",
+                            -1,
+                            gr.update(value=None, visible=False),
+                        )
 
-                btn_download_all_videos.click(
-                    download_all_videos,
-                    outputs=[all_videos_zip_output],
+                    removed_paths = video_gallery_state.remove_by_visual_indices(
+                        [int(i) for i in indices]
+                    )
+                    for path in removed_paths:
+                        if _is_safe_output_path(path):
+                            try:
+                                if os.path.exists(path):
+                                    os.remove(path)
+                                meta_path = path.replace(".mp4", ".json")
+                                if os.path.exists(meta_path):
+                                    os.remove(meta_path)
+                                from core.image_utils import get_video_thumbnail_path as _gvtp
+                                thumb = _gvtp(path)
+                                if os.path.exists(thumb):
+                                    os.remove(thumb)
+                            except Exception:
+                                pass
+
+                    deleted_count = len(removed_paths)
+                    return (
+                        video_gallery_state.to_gradio_gallery(),
+                        video_gallery_state.get_summary() + f" (🗑️ {deleted_count}개 삭제됨)",
+                        "[]",
+                        -1,
+                        gr.update(value=None, visible=False),
+                    )
+
+                btn_delete_video.click(
+                    delete_selected_videos,
+                    inputs=[ms_state_video, selected_vid_idx],
+                    outputs=[video_gallery, video_status, ms_state_video, selected_vid_idx, video_player],
+                    js="(ms, idx) => [window.__getSelJson('video-gallery', ms), idx]",
+                )
+
+                btn_select_all_video.click(
+                    fn=None,
+                    js="() => { if (window.__msToggleAll) window.__msToggleAll('video-gallery'); }",
                 )
 
             # ── 탭 4: 갤러리 & 다운로드 ──────────────────────────────────────
@@ -2611,6 +2737,24 @@ def build_ui() -> gr.Blocks:
             _overlay_download,
             inputs=[overlay_dl_gallery],
             outputs=[single_png_output_gallery],
+        )
+
+        # 오버레이 다운로드 버튼 핸들러: 영상 갤러리 (triggerOverlayAction 경유)
+        def _overlay_download_video(val: str):
+            """'idx:timestamp' 형식에서 인덱스를 추출하여 영상 경로를 반환합니다."""
+            try:
+                idx = int(val.split(":")[0])
+            except Exception:
+                return None
+            item = video_gallery_state.get_item_by_visual_index(idx)
+            if item is None or not item.video_path or not os.path.exists(item.video_path):
+                return None
+            return item.video_path
+
+        overlay_dl_video.input(
+            _overlay_download_video,
+            inputs=[overlay_dl_video],
+            outputs=[single_video_output],
         )
 
         gr.Markdown(

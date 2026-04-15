@@ -201,3 +201,181 @@ class GalleryState:
             if failed:
                 parts.append(f"실패 {failed}장")
             return " · ".join(parts)
+
+
+# ── 영상 갤러리 ──────────────────────────────────────────────────────────────
+
+@dataclass
+class VideoGalleryItem:
+    video_path: str
+    thumbnail_path: str
+    model: str
+    prompt: str
+    ratio: str
+    quality: str
+    duration: int
+    index: int
+    status: str = "success"   # "success" | "pending" | "failed"
+    error: Optional[str] = None
+
+
+class VideoGalleryState:
+    """세션 내 생성된 영상 목록을 관리합니다.
+    스레드 안전 설계: 생성 작업과 UI 폴링이 동시에 접근할 수 있습니다."""
+
+    def __init__(self):
+        self._items: list[VideoGalleryItem] = []
+        self._lock = threading.Lock()
+
+    def add(self, item: VideoGalleryItem) -> None:
+        with self._lock:
+            self._items.append(item)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
+
+    def allocate_pending_item(
+        self, model: str, prompt: str, ratio: str, quality: str, duration: int
+    ) -> int:
+        """대기 중 슬롯을 미리 할당하고 _items 인덱스를 반환합니다."""
+        with self._lock:
+            idx = len(self._items)
+            item = VideoGalleryItem(
+                video_path="",
+                thumbnail_path="",
+                model=model,
+                prompt=prompt,
+                ratio=ratio,
+                quality=quality,
+                duration=duration,
+                index=idx,
+                status="pending",
+            )
+            self._items.append(item)
+            return idx
+
+    def fill_pending_item(
+        self,
+        gallery_index: int,
+        video_path: str,
+        thumbnail_path: str,
+        status: str = "success",
+        error: Optional[str] = None,
+    ) -> None:
+        """대기 중 슬롯을 완료된 영상(또는 실패)으로 업데이트합니다."""
+        with self._lock:
+            if 0 <= gallery_index < len(self._items):
+                item = self._items[gallery_index]
+                item.video_path = video_path
+                item.thumbnail_path = thumbnail_path
+                item.status = status
+                item.error = error
+
+    def fail_remaining_pending(self, gallery_indices: list[int], error: str) -> None:
+        """지정된 인덱스 중 아직 pending 상태인 항목을 실패로 표시합니다."""
+        with self._lock:
+            for idx in gallery_indices:
+                if 0 <= idx < len(self._items):
+                    item = self._items[idx]
+                    if item.status == "pending":
+                        item.status = "failed"
+                        item.error = error
+
+    def has_pending(self) -> bool:
+        """현재 pending 상태인 항목이 하나라도 있으면 True를 반환합니다."""
+        with self._lock:
+            return any(i.status == "pending" for i in self._items)
+
+    def remove_by_visual_indices(self, visual_indices: list[int]) -> list[str]:
+        """
+        시각적 인덱스(역순 표시 기준, 대기 중·성공 항목 포함) 목록에 해당하는 항목을 제거합니다.
+        제거된 성공 항목의 video_path 목록을 반환합니다.
+        """
+        with self._lock:
+            visible = [
+                i for i in reversed(self._items) if i.status in _VISIBLE_STATUSES
+            ]
+            to_remove = set()
+            removed_paths: list[str] = []
+            for vi in visual_indices:
+                if 0 <= vi < len(visible):
+                    item = visible[vi]
+                    to_remove.add(id(item))
+                    if item.video_path and item.status == "success":
+                        removed_paths.append(item.video_path)
+            self._items = [i for i in self._items if id(i) not in to_remove]
+            return removed_paths
+
+    @property
+    def items(self) -> list[VideoGalleryItem]:
+        with self._lock:
+            return list(self._items)
+
+    @property
+    def video_paths(self) -> list[str]:
+        with self._lock:
+            return [
+                item.video_path
+                for item in self._items
+                if item.video_path and item.status == "success"
+            ]
+
+    def get_item_by_visual_index(self, visual_idx: int) -> Optional[VideoGalleryItem]:
+        """
+        갤러리 표시 순서(최신 먼저, 대기 중·성공 항목 포함)에서 시각적 인덱스에 해당하는
+        항목을 반환합니다. 해당 항목이 대기 중이거나 범위를 벗어나면 None을 반환합니다.
+        """
+        with self._lock:
+            visible = [
+                i for i in reversed(self._items) if i.status in _VISIBLE_STATUSES
+            ]
+            if 0 <= visual_idx < len(visible):
+                item = visible[visual_idx]
+                return item if item.status == "success" else None
+            return None
+
+    def to_gradio_gallery(self) -> list[tuple[str, str]]:
+        """
+        Gradio Gallery 컴포넌트에 전달할 형식으로 변환합니다.
+        - 대기 중(pending) 항목: 플레이스홀더 이미지와 '⏳ 생성 중...' 캡션
+        - 성공(success) 항목: 썸네일과 전체 메타데이터 캡션
+        최신 항목이 맨 앞(왼쪽 위)에 표시됩니다.
+        """
+        with self._lock:
+            result = []
+            for item in reversed(self._items):
+                if item.status == "pending":
+                    caption = f"⏳ 생성 중... | {item.model} | {item.ratio} | {item.duration}초"
+                    result.append((PLACEHOLDER_IMAGE_PATH, caption))
+                    continue
+                if not item.video_path or not os.path.exists(item.video_path):
+                    continue
+                # 썸네일 사용 (있으면); 없으면 플레이스홀더
+                display_path = (
+                    item.thumbnail_path
+                    if item.thumbnail_path and os.path.exists(item.thumbnail_path)
+                    else PLACEHOLDER_IMAGE_PATH
+                )
+                short_prompt = item.prompt[:60] + ("..." if len(item.prompt) > 60 else "")
+                caption = (
+                    f"#{item.index + 1} | {item.model} | {item.ratio} | "
+                    f"{item.duration}초 | {item.quality}\n{short_prompt}"
+                )
+                result.append((display_path, caption))
+            return result
+
+    def get_summary(self) -> str:
+        with self._lock:
+            success = sum(1 for i in self._items if i.status == "success")
+            pending = sum(1 for i in self._items if i.status == "pending")
+            failed = sum(1 for i in self._items if i.status == "failed")
+            total = success + pending + failed
+            if total == 0:
+                return "아직 생성된 영상이 없습니다."
+            parts = [f"총 {success}개 완료"]
+            if pending:
+                parts.append(f"생성 중 {pending}개")
+            if failed:
+                parts.append(f"실패 {failed}개")
+            return " · ".join(parts)
