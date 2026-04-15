@@ -49,6 +49,70 @@ def get_thumbnail_path(image_path: str) -> str:
     return str(thumb_dir / p.name)
 
 
+def get_video_thumbnail_path(video_path: str) -> str:
+    """영상 경로로부터 썸네일 파일 경로를 계산합니다.
+    썸네일은 영상과 같은 날짜 디렉토리 내 thumbs/ 서브폴더에 PNG로 저장됩니다."""
+    p = Path(video_path)
+    thumb_dir = p.parent / "thumbs"
+    return str(thumb_dir / (p.stem + ".png"))
+
+
+def create_video_thumbnail(video_path: str) -> str:
+    """영상의 첫 프레임을 추출하여 thumbs/ 서브폴더에 PNG 썸네일로 저장합니다.
+    cv2(OpenCV) 또는 ffmpeg가 설치된 경우 실제 프레임을 추출하고,
+    그렇지 않으면 플레이스홀더 이미지를 썸네일로 사용합니다."""
+    import shutil as _shutil
+    import subprocess
+
+    output_base = Path(OUTPUT_BASE_DIR).resolve()
+    resolved = Path(video_path).resolve()
+    if not str(resolved).startswith(str(output_base) + os.sep):
+        raise ValueError(f"영상 경로가 출력 디렉토리 밖에 있습니다: {video_path}")
+
+    # validated resolved 경로에서 thumb_path 계산 (경로 주입 방지)
+    safe_video_path = str(resolved)
+    thumb_path = get_video_thumbnail_path(safe_video_path)
+    thumb_dir = Path(thumb_path).parent
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1) cv2(OpenCV) 로 첫 프레임 추출
+    try:
+        import cv2  # type: ignore
+        cap = cv2.VideoCapture(safe_video_path)
+        ret, frame = cap.read()
+        cap.release()
+        if ret:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame_rgb)
+            img.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE), Image.LANCZOS)
+            img.save(thumb_path, format="PNG")
+            return thumb_path
+    except Exception:
+        pass
+
+    # 2) ffmpeg CLI 로 첫 프레임 추출
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-i", safe_video_path,
+                "-vframes", "1", "-q:v", "2",
+                "-vf", f"scale='min({THUMBNAIL_SIZE},iw)':-1",
+                "-y", thumb_path,
+            ],
+            capture_output=True,
+            timeout=15,
+        )
+        if result.returncode == 0 and Path(thumb_path).exists():
+            return thumb_path
+    except Exception:
+        pass
+
+    # 3) 폴백: 플레이스홀더 이미지를 썸네일로 복사
+    if os.path.exists(PLACEHOLDER_IMAGE_PATH):
+        _shutil.copy2(PLACEHOLDER_IMAGE_PATH, thumb_path)
+    return thumb_path
+
+
 def create_thumbnail(image_path: str) -> str:
     """원본 이미지를 512px 썸네일로 변환하여 thumbs/ 폴더에 저장하고 경로를 반환합니다."""
     # 경로가 출력 디렉토리 내에 있는지 확인 (경로 주입 방지)
@@ -174,9 +238,10 @@ def image_to_bytes(image: Image.Image, fmt: str = "PNG") -> bytes:
     return buf.getvalue()
 
 
-def save_video(video_bytes: bytes, model_name: str, prompt: str) -> str:
+def save_video(video_bytes: bytes, model_name: str, prompt: str) -> tuple[str, str]:
     """
-    영상 바이트 데이터를 outputs/YYYY-MM-DD/ 경로에 저장하고 파일 경로를 반환합니다.
+    영상 바이트 데이터를 outputs/YYYY-MM-DD/ 경로에 저장하고
+    (video_path, thumbnail_path) 튜플을 반환합니다.
     """
     out_dir = get_output_dir()
     timestamp = datetime.now().strftime("%H%M%S_%f")[:13]
@@ -199,7 +264,13 @@ def save_video(video_bytes: bytes, model_name: str, prompt: str) -> str:
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
 
-    return str(video_path)
+    # 썸네일 생성
+    try:
+        thumb_path = create_video_thumbnail(str(video_path))
+    except Exception:
+        thumb_path = PLACEHOLDER_IMAGE_PATH
+
+    return str(video_path), thumb_path
 
 
 def load_metadata(meta_path: str) -> dict:
@@ -283,9 +354,17 @@ def load_existing_video_outputs() -> list[dict]:
                 prompt = meta.get("prompt", "")
                 short_prompt = prompt[:40] + ("..." if len(prompt) > 40 else "")
                 label = f"{date_dir.name} | {model} | {short_prompt}"
+                # 썸네일 경로 계산 (없으면 생성 시도)
+                thumb_path = get_video_thumbnail_path(str(video_path))
+                if not Path(thumb_path).exists():
+                    try:
+                        thumb_path = create_video_thumbnail(str(video_path))
+                    except Exception:
+                        thumb_path = PLACEHOLDER_IMAGE_PATH
                 items.append(
                     {
                         "path": str(video_path),
+                        "thumbnail_path": thumb_path,
                         "label": label,
                         "timestamp": meta.get("timestamp", ""),
                         "model": model,
