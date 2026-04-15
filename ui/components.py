@@ -2462,8 +2462,7 @@ def build_ui() -> gr.Blocks:
                                 meta_path = path.replace(".mp4", ".json")
                                 if os.path.exists(meta_path):
                                     os.remove(meta_path)
-                                from core.image_utils import get_video_thumbnail_path as _gvtp
-                                thumb = _gvtp(path)
+                                thumb = get_video_thumbnail_path(path)
                                 if os.path.exists(thumb):
                                     os.remove(thumb)
                             except Exception:
