@@ -69,13 +69,16 @@ def create_video_thumbnail(video_path: str) -> str:
     if not str(resolved).startswith(str(output_base) + os.sep):
         raise ValueError(f"영상 경로가 출력 디렉토리 밖에 있습니다: {video_path}")
 
-    thumb_path = get_video_thumbnail_path(video_path)
-    Path(thumb_path).parent.mkdir(parents=True, exist_ok=True)
+    # validated resolved 경로에서 thumb_path 계산 (경로 주입 방지)
+    safe_video_path = str(resolved)
+    thumb_path = get_video_thumbnail_path(safe_video_path)
+    thumb_dir = Path(thumb_path).parent
+    thumb_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) cv2(OpenCV) 로 첫 프레임 추출
     try:
         import cv2  # type: ignore
-        cap = cv2.VideoCapture(str(resolved))
+        cap = cv2.VideoCapture(safe_video_path)
         ret, frame = cap.read()
         cap.release()
         if ret:
@@ -91,7 +94,7 @@ def create_video_thumbnail(video_path: str) -> str:
     try:
         result = subprocess.run(
             [
-                "ffmpeg", "-i", str(resolved),
+                "ffmpeg", "-i", safe_video_path,
                 "-vframes", "1", "-q:v", "2",
                 "-vf", f"scale='min({THUMBNAIL_SIZE},iw)':-1",
                 "-y", thumb_path,
