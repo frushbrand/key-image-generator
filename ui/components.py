@@ -1619,28 +1619,65 @@ def build_ui() -> gr.Blocks:
     })();
 
     // ── Ctrl+Enter 단축키: 이미지/영상 생성 ──────────────────────────────
+    // 이벤트 위임 방식: document에 한 번만 등록하여 Gradio DOM 재생성 후에도 항상 동작
     (function() {
-        function bindCtrlEnter(promptElemId, btnElemId) {
-            var attempts = 0;
-            (function tryBind() {
-                var wrap = document.getElementById(promptElemId);
-                var ta = wrap ? wrap.querySelector('textarea') : null;
-                if (!ta) {
-                    if (++attempts < 40) { setTimeout(tryBind, 300); return; }
-                    return;
+        var _PROMPT_BTN = [
+            ['image-prompt', 'image-generate-btn'],
+            ['video-prompt', 'video-generate-btn']
+        ];
+        document.addEventListener('keydown', function(e) {
+            if (!(e.ctrlKey || e.metaKey) || e.key !== 'Enter') return;
+            var ta = e.target;
+            if (!ta || ta.tagName !== 'TEXTAREA') return;
+            for (var i = 0; i < _PROMPT_BTN.length; i++) {
+                if (ta.closest('#' + _PROMPT_BTN[i][0])) {
+                    e.preventDefault(); e.stopPropagation();
+                    var bw = document.getElementById(_PROMPT_BTN[i][1]);
+                    var b = bw ? (bw.tagName === 'BUTTON' ? bw : bw.querySelector('button')) : null;
+                    if (b) b.click();
+                    break;
                 }
-                ta.addEventListener('keydown', function(e) {
-                    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-                        e.preventDefault(); e.stopPropagation();
-                        var bw = document.getElementById(btnElemId);
-                        var b = bw ? (bw.tagName === 'BUTTON' ? bw : bw.querySelector('button')) : null;
-                        if (b) b.click();
-                    }
-                });
-            })();
-        }
-        bindCtrlEnter('image-prompt', 'image-generate-btn');
-        bindCtrlEnter('video-prompt', 'video-generate-btn');
+            }
+        }, true);
+    })();
+
+    // ── Ctrl+V 클립보드 이미지 → 레퍼런스 이미지 추가 (Chrome 최적화) ────
+    // 이미지 프롬프트 또는 영상 프롬프트 텍스트박스에 포커스가 있을 때만 동작
+    (function() {
+        document.addEventListener('paste', function(e) {
+            var ta = document.activeElement;
+            if (!ta || ta.tagName !== 'TEXTAREA') return;
+            if (!ta.closest('#image-prompt') && !ta.closest('#video-prompt')) return;
+
+            var items = e.clipboardData && e.clipboardData.items;
+            if (!items) return;
+            var imgItem = null;
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].kind === 'file' && items[i].type.indexOf('image') === 0) {
+                    imgItem = items[i]; break;
+                }
+            }
+            if (!imgItem) return;  // 이미지 없으면 일반 텍스트 붙여넣기 그대로 진행
+
+            e.preventDefault();
+            var file = imgItem.getAsFile();
+            if (!file) return;
+            var ext = file.type === 'image/png' ? 'png' : 'jpg';
+            var namedFile = new File([file], 'clipboard-' + Date.now() + '.' + ext, {type: file.type});
+
+            var uploadWrap = document.getElementById('ref-upload-add');
+            if (!uploadWrap) return;
+            var fileInput = uploadWrap.querySelector('input[type="file"]');
+            if (!fileInput) return;
+            try {
+                var dt = new DataTransfer();
+                dt.items.add(namedFile);
+                fileInput.files = dt.files;
+                fileInput.dispatchEvent(new Event('change', {bubbles: true}));
+            } catch(err) {
+                console.warn('클립보드 이미지 붙여넣기 실패:', err);
+            }
+        });
     })();
 
     // ── 다운로드 파일 위젯 자동 실행 (별도 창 없이 바로 다운로드) ──────────
