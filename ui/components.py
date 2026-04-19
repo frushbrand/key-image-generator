@@ -31,6 +31,13 @@ from config.settings import (
     KLING_DEFAULT_RATIO,
     KLING_QUALITY_OPTIONS,
     KLING_DEFAULT_QUALITY,
+    SEEDANCE_MODELS,
+    SEEDANCE_DEFAULT_DURATION,
+    SEEDANCE_DEFAULT_MODEL,
+    SEEDANCE_VIDEO_RATIOS,
+    SEEDANCE_DEFAULT_RATIO,
+    SEEDANCE_QUALITY_OPTIONS,
+    SEEDANCE_DEFAULT_QUALITY,
 )
 from core.gemini_client import validate_api_key, generate_batch_images
 from core.generation_stats import (
@@ -45,6 +52,14 @@ from core.kling_client import (
     create_video_reference_task,
     poll_task_result,
     download_video,
+)
+from core.seedance_client import (
+    validate_seedance_key,
+    create_text_to_video_task as seedance_create_t2v_task,
+    create_image_to_video_task as seedance_create_i2v_task,
+    create_start_end_frame_task as seedance_create_sef_task,
+    poll_task_result as seedance_poll_task_result,
+    download_video as seedance_download_video,
 )
 from core.image_utils import (
     load_reference_images,
@@ -227,16 +242,17 @@ APP_CSS = """
            JS에서 접근해야 하는 컴포넌트는 visible=True + CSS hidden 방식 사용 */
         #single-png-gen, #selected-zip-gen,
         #single-png-gallery, #full-zip-gallery, #selected-zip-gallery,
-        #single-video-gen, #selected-videos-zip-gen {
+        #single-video-gen, #selected-videos-zip-gen,
+        #single-video-seedance, #selected-videos-zip-seedance {
             display: none !important;
         }
         /* 내부 상태/트리거 텍스트박스: display:none 대신 화면 밖 배치 사용
            display:none 시 Gradio 5 Svelte 이벤트 파이프라인이 synthetic event를
            처리하지 않아 Python 핸들러가 트리거되지 않음 */
-        #ms-state-gen, #ms-state-gallery, #ms-state-video,
+        #ms-state-gen, #ms-state-gallery, #ms-state-video, #ms-state-seedance,
         #overlay-dl-gen, #overlay-vid-gen, #overlay-ref-gen,
         #overlay-dl-gallery, #overlay-vid-gallery, #overlay-ref-gallery,
-        #overlay-dl-video,
+        #overlay-dl-video, #overlay-dl-seedance,
         #lb-ref-urls-state {
             position: absolute !important;
             left: -9999px !important;
@@ -348,6 +364,10 @@ def load_settings() -> dict:
                 key = line.split("=", 1)[1].strip()
                 if key and key != "your_kling_secret_key_here":
                     settings["kling_secret_key"] = key
+            elif line.startswith("SEEDANCE_API_KEY="):
+                key = line.split("=", 1)[1].strip()
+                if key and key != "your_fal_ai_api_key_here":
+                    settings["seedance_api_key"] = key
     return settings
 
 
@@ -396,6 +416,24 @@ def on_save_kling_keys(access_key: str, secret_key: str):
     cfg["kling_secret_key"] = secret_key.strip()
     save_settings(cfg)
     return "💾 Kling API 키가 저장되었습니다."
+
+
+def on_validate_seedance_key(api_key: str):
+    ok, msg = validate_seedance_key(api_key)
+    if ok:
+        cfg = load_settings()
+        cfg["seedance_api_key"] = api_key.strip()
+        save_settings(cfg)
+    return msg
+
+
+def on_save_seedance_key(api_key: str):
+    if not api_key or not api_key.strip():
+        return "❌ API 키를 입력해주세요."
+    cfg = load_settings()
+    cfg["seedance_api_key"] = api_key.strip()
+    save_settings(cfg)
+    return "💾 Seedance API 키가 저장되었습니다."
 
 
 def build_unified_video_fn(gallery_state: GalleryState, video_gallery_state: "VideoGalleryState"):
@@ -545,7 +583,132 @@ def build_unified_video_fn(gallery_state: GalleryState, video_gallery_state: "Vi
     return generate_video
 
 
-def build_generate_fn(gallery_state: GalleryState):
+def build_unified_seedance_video_fn(gallery_state: GalleryState, seedance_video_gallery_state: "VideoGalleryState"):
+    """Seedance 영상 생성 핸들러 팩토리 (이미지→영상 / 시작-끝 프레임 / 텍스트→영상)"""
+
+    def generate_seedance_video(
+        mode: str,           # "image" | "start_end"
+        ref_image,           # 레퍼런스 이미지 모드 (PIL Image or ndarray)
+        start_image,         # 시작-끝 프레임 모드: 시작 프레임
+        end_image,           # 시작-끝 프레임 모드: 끝 프레임
+        prompt: str,
+        model_label: str,
+        duration: int,
+        aspect_ratio: str,
+        generate_audio: bool,
+        seedance_quality: str,
+        progress=gr.Progress(track_tqdm=True),
+    ):
+        cfg = load_settings()
+        ak = cfg.get("seedance_api_key", "").strip()
+        if not ak:
+            gr.Warning("API 키 설정 탭에서 Seedance (fal.ai) API 키를 먼저 저장해주세요.")
+            return None, "❌ Seedance API 키 없음"
+
+        model_cfg = SEEDANCE_MODELS[model_label]
+        api_model = model_cfg["api_name"]
+
+        # 영상 갤러리에 pending 슬롯 사전 할당
+        gallery_index = seedance_video_gallery_state.allocate_pending_item(
+            model=model_label,
+            prompt=prompt or "",
+            ratio=aspect_ratio,
+            quality=seedance_quality,
+            duration=int(duration),
+        )
+
+        progress(0.05, desc="영상 생성 작업 요청 중...")
+
+        try:
+            if mode == "start_end":
+                if start_image is None or end_image is None:
+                    seedance_video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", "시작/끝 프레임 없음")
+                    return None, "❌ 시작 프레임과 끝 프레임을 모두 업로드해주세요."
+                start_pil = (
+                    start_image if isinstance(start_image, Image.Image)
+                    else Image.fromarray(start_image).convert("RGB")
+                )
+                end_pil = (
+                    end_image if isinstance(end_image, Image.Image)
+                    else Image.fromarray(end_image).convert("RGB")
+                )
+                progress(0.08, desc="이미지 업로드 중...")
+                request_id, endpoint = seedance_create_sef_task(
+                    api_key=ak,
+                    start_image=start_pil, end_image=end_pil,
+                    prompt=prompt or "", model=api_model,
+                    duration=int(duration), aspect_ratio=aspect_ratio,
+                    resolution=seedance_quality, generate_audio=generate_audio,
+                )
+            else:
+                # 레퍼런스 이미지 모드 — 이미지가 없으면 텍스트→영상으로 대체
+                if ref_image is None:
+                    if not (prompt or "").strip():
+                        seedance_video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", "프롬프트 없음")
+                        return None, "❌ 레퍼런스 이미지가 없으면 프롬프트를 입력해주세요."
+                    progress(0.05, desc="텍스트→영상 작업 요청 중...")
+                    request_id, endpoint = seedance_create_t2v_task(
+                        api_key=ak,
+                        prompt=prompt, model=api_model,
+                        duration=int(duration), aspect_ratio=aspect_ratio,
+                        resolution=seedance_quality, generate_audio=generate_audio,
+                    )
+                else:
+                    pil_image = (
+                        ref_image if isinstance(ref_image, Image.Image)
+                        else Image.fromarray(ref_image).convert("RGB")
+                    )
+                    progress(0.08, desc="이미지 업로드 중...")
+                    request_id, endpoint = seedance_create_i2v_task(
+                        api_key=ak,
+                        image=pil_image,
+                        prompt=prompt or "", model=api_model,
+                        duration=int(duration), aspect_ratio=aspect_ratio,
+                        resolution=seedance_quality, generate_audio=generate_audio,
+                    )
+        except Exception as e:
+            seedance_video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", str(e))
+            return None, f"❌ 작업 생성 실패: {e}"
+
+        progress(0.15, desc=f"대기 중... (request_id: {request_id[:8]}…)")
+        import time as _time
+        poll_start_time = _time.time()
+        avg_video = get_avg_video_time(model_label)
+
+        def on_poll(elapsed, status):
+            frac = min(0.15 + (elapsed / avg_video) * 0.84, 0.99)
+            progress(frac, desc=f"처리 중… {elapsed}초 경과 / 예상 {int(avg_video)}초 (상태: {status})")
+
+        try:
+            video_url = seedance_poll_task_result(
+                api_key=ak,
+                request_id=request_id, endpoint=endpoint,
+                timeout=300, poll_interval=5,
+                progress_callback=on_poll,
+            )
+            record_video_generation(model_label, _time.time() - poll_start_time)
+        except TimeoutError as e:
+            seedance_video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", str(e))
+            return None, f"⏱️ {e}"
+        except Exception as e:
+            seedance_video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", str(e))
+            return None, f"❌ 생성 실패: {e}"
+
+        progress(0.97, desc="영상 다운로드 중...")
+        try:
+            video_bytes = seedance_download_video(video_url)
+        except Exception as e:
+            seedance_video_gallery_state.fill_pending_item(gallery_index, "", "", "failed", str(e))
+            return None, f"❌ 영상 다운로드 실패: {e}"
+
+        saved_video_path, thumb_path = save_video(video_bytes, model_label, prompt or "")
+        seedance_video_gallery_state.fill_pending_item(
+            gallery_index, saved_video_path, thumb_path, "success"
+        )
+        progress(1.0, desc="완료!")
+        return saved_video_path, f"✅ 영상 생성 완료! 저장 위치: {saved_video_path}"
+
+    return generate_seedance_video
     """생성 버튼 클릭 핸들러 팩토리 (즉시 반환 후 백그라운드 스레드로 병렬 생성)"""
 
     def generate(
@@ -786,6 +949,7 @@ def build_ui() -> gr.Blocks:
     saved_api_key = saved.get("api_key", "")
     saved_kling_access = saved.get("kling_access_key", "")
     saved_kling_secret = saved.get("kling_secret_key", "")
+    saved_seedance_api_key = saved.get("seedance_api_key", "")
 
     # 저장된 UI 생성 설정 복원 (새로고침 후에도 유지)
     saved_image_model = saved.get("image_model", DEFAULT_MODEL)
@@ -819,6 +983,23 @@ def build_ui() -> gr.Blocks:
     saved_video_prompt = saved.get("video_prompt", "")
     saved_video_enable_audio = bool(saved.get("video_enable_audio", False))
 
+    # Seedance 저장 설정 복원
+    saved_seedance_model = saved.get("seedance_model", SEEDANCE_DEFAULT_MODEL)
+    if saved_seedance_model not in SEEDANCE_MODELS:
+        saved_seedance_model = SEEDANCE_DEFAULT_MODEL
+    saved_seedance_quality = saved.get("seedance_quality", SEEDANCE_DEFAULT_QUALITY)
+    if saved_seedance_quality not in SEEDANCE_QUALITY_OPTIONS:
+        saved_seedance_quality = SEEDANCE_DEFAULT_QUALITY
+    try:
+        saved_seedance_duration = max(4, min(int(saved.get("seedance_duration", SEEDANCE_DEFAULT_DURATION)), 15))
+    except (TypeError, ValueError):
+        saved_seedance_duration = SEEDANCE_DEFAULT_DURATION
+    saved_seedance_ratio = saved.get("seedance_ratio", SEEDANCE_DEFAULT_RATIO)
+    if saved_seedance_ratio not in SEEDANCE_VIDEO_RATIOS:
+        saved_seedance_ratio = SEEDANCE_DEFAULT_RATIO
+    saved_seedance_prompt = saved.get("seedance_prompt", "")
+    saved_seedance_generate_audio = bool(saved.get("seedance_generate_audio", True))
+
     # 영구 저장된 레퍼런스 이미지 복원
     saved_ref_paths = _load_persistent_ref_paths()
     _initial_ref_preview_imgs = []
@@ -849,22 +1030,44 @@ def build_ui() -> gr.Blocks:
             )
         )
 
-    # 기존 outputs/ 디렉토리의 영상을 영상 갤러리 상태에 로드
+    # 기존 outputs/ 디렉토리의 영상을 Kling / Seedance 갤러리로 분리하여 로드
     video_gallery_state = VideoGalleryState()
-    for i, entry in enumerate(load_existing_video_outputs()):
-        video_gallery_state.add(
-            VideoGalleryItem(
-                video_path=entry["path"],
-                thumbnail_path=entry.get("thumbnail_path", PLACEHOLDER_IMAGE_PATH),
-                model=entry["model"],
-                prompt=entry["prompt"],
-                ratio="",
-                quality="",
-                duration=0,
-                index=i,
-                status="success",
+    seedance_video_gallery_state = VideoGalleryState()
+    _kling_vi = 0
+    _seedance_vi = 0
+    for entry in load_existing_video_outputs():
+        model_name = entry.get("model", "")
+        _is_seedance = model_name.startswith("Seedance") or model_name.startswith("seedance")
+        if _is_seedance:
+            seedance_video_gallery_state.add(
+                VideoGalleryItem(
+                    video_path=entry["path"],
+                    thumbnail_path=entry.get("thumbnail_path", PLACEHOLDER_IMAGE_PATH),
+                    model=model_name,
+                    prompt=entry["prompt"],
+                    ratio="",
+                    quality="",
+                    duration=0,
+                    index=_seedance_vi,
+                    status="success",
+                )
             )
-        )
+            _seedance_vi += 1
+        else:
+            video_gallery_state.add(
+                VideoGalleryItem(
+                    video_path=entry["path"],
+                    thumbnail_path=entry.get("thumbnail_path", PLACEHOLDER_IMAGE_PATH),
+                    model=model_name,
+                    prompt=entry["prompt"],
+                    ratio="",
+                    quality="",
+                    duration=0,
+                    index=_kling_vi,
+                    status="success",
+                )
+            )
+            _kling_vi += 1
 
     def _use_as_ref(idx: int, current_files: list):
         """선택된 이미지를 레퍼런스 이미지 업로드 칸에 추가하는 공용 핸들러."""
@@ -1623,7 +1826,8 @@ def build_ui() -> gr.Blocks:
     (function() {
         var _PROMPT_BTN = [
             ['image-prompt', 'image-generate-btn'],
-            ['video-prompt', 'video-generate-btn']
+            ['video-prompt', 'video-generate-btn'],
+            ['seedance-prompt', 'seedance-generate-btn']
         ];
         document.addEventListener('keydown', function(e) {
             if (!(e.ctrlKey || e.metaKey) || e.key !== 'Enter') return;
@@ -1682,7 +1886,7 @@ def build_ui() -> gr.Blocks:
 
     // ── 다운로드 파일 위젯 자동 실행 (별도 창 없이 바로 다운로드) ──────────
     (function() {
-        var DL_IDS = ['single-png-gen', 'selected-zip-gen', 'single-png-gallery', 'selected-zip-gallery', 'full-zip-gallery', 'single-video-gen', 'selected-videos-zip-gen'];
+        var DL_IDS = ['single-png-gen', 'selected-zip-gen', 'single-png-gallery', 'selected-zip-gallery', 'full-zip-gallery', 'single-video-gen', 'selected-videos-zip-gen', 'single-video-seedance', 'selected-videos-zip-seedance'];
         DL_IDS.forEach(function(id) {
             var attempts = 0;
             (function trySetup() {
@@ -1732,7 +1936,7 @@ def build_ui() -> gr.Blocks:
         gr.HTML(
             """
             <div class="title-text">🎨 AI 영상 키 이미지 생성 툴</div>
-            <div class="subtitle-text">나노 바나나 2 / 나노 바나나 프로 모델로 영상 키 이미지를 생성하고, Kling AI로 영상을 만들어보세요.</div>
+            <div class="subtitle-text">나노 바나나 2 / 나노 바나나 프로 모델로 영상 키 이미지를 생성하고, Kling AI 또는 Seedance 2.0으로 영상을 만들어보세요.</div>
             """
         )
         gr.HTML(value="", head=TAB_PERSIST_JS)
@@ -1804,6 +2008,37 @@ def build_ui() -> gr.Blocks:
                     on_save_kling_keys,
                     inputs=[kling_access_input, kling_secret_input],
                     outputs=[kling_key_status],
+                )
+
+                gr.Markdown("---")
+                gr.Markdown(
+                    """
+                    ### Seedance 2.0 API 키 설정 (영상 생성용, fal.ai)
+                    [fal.ai 대시보드](https://fal.ai/dashboard/keys)에서 API 키를 발급받으세요.
+                    """
+                )
+                with gr.Row():
+                    seedance_key_input = gr.Textbox(
+                        label="Seedance (fal.ai) API 키",
+                        placeholder="fal.ai API 키 (예: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:xxxxxx...)",
+                        value=saved_seedance_api_key,
+                        type="password",
+                        scale=4,
+                    )
+                with gr.Row():
+                    btn_seedance_validate = gr.Button("🔍 키 검증", variant="secondary")
+                    btn_seedance_save = gr.Button("💾 저장", variant="primary")
+                seedance_key_status = gr.Textbox(label="Seedance 키 상태", interactive=False)
+
+                btn_seedance_validate.click(
+                    on_validate_seedance_key,
+                    inputs=[seedance_key_input],
+                    outputs=[seedance_key_status],
+                )
+                btn_seedance_save.click(
+                    on_save_seedance_key,
+                    inputs=[seedance_key_input],
+                    outputs=[seedance_key_status],
                 )
 
             # ── 탭 2: 이미지 생성 ────────────────────────────────────────────
@@ -2526,7 +2761,326 @@ def build_ui() -> gr.Blocks:
                     js="() => { if (window.__msToggleAll) window.__msToggleAll('video-gallery'); }",
                 )
 
-            # ── 탭 4: 갤러리 & 다운로드 ──────────────────────────────────────
+            # ── 탭 4: 영상 생성 (Seedance) ───────────────────────────────────
+            with gr.Tab("🌱 영상 생성 (Seedance)", id="tab_seedance"):
+                gr.Markdown(
+                    """
+                    ### 🌱 Seedance 2.0 영상 생성 (fal.ai)
+                    입력 방식을 선택하고 설정을 조정한 뒤 **영상 생성** 버튼을 클릭하세요.
+                    Seedance API 키(fal.ai)는 **API 키 설정** 탭에서 저장할 수 있습니다.
+                    """
+                )
+
+                # 입력 모드 상태: "image" | "start_end"
+                seedance_mode_state = gr.State("image")
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+
+                        gr.Markdown("#### 📥 입력 방식 선택")
+                        with gr.Tabs() as seedance_input_tabs:
+
+                            with gr.Tab("🖼️ 레퍼런스 이미지"):
+                                gr.Markdown("시작 프레임 역할을 할 이미지를 업로드하세요. **이미지가 없으면 프롬프트만으로 텍스트→영상을 생성합니다.**")
+                                seedance_ref_image = gr.Image(
+                                    label="레퍼런스 이미지 (갤러리에서 전송 또는 직접 업로드)",
+                                    type="pil",
+                                    height=200,
+                                )
+
+                            with gr.Tab("🎞️ 시작-끝 프레임"):
+                                gr.Markdown("시작 프레임과 끝 프레임을 각각 업로드하면 두 이미지 사이를 자연스럽게 이어주는 영상이 생성됩니다.")
+                                seedance_start_image = gr.Image(
+                                    label="시작 프레임",
+                                    type="pil",
+                                    height=180,
+                                )
+                                seedance_end_image = gr.Image(
+                                    label="끝 프레임",
+                                    type="pil",
+                                    height=180,
+                                )
+
+                        def _on_seedance_input_mode_change(evt: gr.SelectData):
+                            modes = ["image", "start_end"]
+                            return modes[evt.index] if 0 <= evt.index < len(modes) else "image"
+
+                        seedance_input_tabs.select(
+                            _on_seedance_input_mode_change,
+                            outputs=[seedance_mode_state],
+                        )
+
+                    with gr.Column(scale=2):
+                        gr.Markdown("#### ⚙️ 영상 설정")
+
+                        seedance_model_radio = gr.Radio(
+                            choices=list(SEEDANCE_MODELS.keys()),
+                            value=saved_seedance_model,
+                            label="Seedance 모델",
+                            info=" | ".join(
+                                f"{k}: {v['description']}"
+                                for k, v in SEEDANCE_MODELS.items()
+                            ),
+                        )
+
+                        seedance_quality_dropdown = gr.Dropdown(
+                            choices=list(SEEDANCE_QUALITY_OPTIONS.keys()),
+                            value=saved_seedance_quality,
+                            label="화질 (해상도)",
+                            info="720p: 표준 / 1080p: 고화질 / 480p: 빠른 생성",
+                        )
+
+                        seedance_duration_slider = gr.Slider(
+                            minimum=4,
+                            maximum=15,
+                            value=saved_seedance_duration,
+                            step=1,
+                            label="영상 길이 (초)",
+                            info="4초부터 15초까지 1초 단위로 선택",
+                        )
+
+                        seedance_ratio_dropdown = gr.Dropdown(
+                            choices=SEEDANCE_VIDEO_RATIOS,
+                            value=saved_seedance_ratio,
+                            label="화면 비율",
+                        )
+
+                        seedance_prompt_input = gr.Textbox(
+                            label="프롬프트 (선택)",
+                            placeholder="영상 움직임을 설명하세요. 예: Camera slowly zooms in, dramatic lighting\n\n💡 Ctrl+Enter로 생성 시작",
+                            lines=3,
+                            value=saved_seedance_prompt,
+                            elem_id="seedance-prompt",
+                        )
+
+                        seedance_audio_checkbox = gr.Checkbox(
+                            label="🔊 오디오 자동 생성",
+                            value=saved_seedance_generate_audio,
+                            info="영상에 어울리는 오디오를 함께 생성합니다.",
+                        )
+
+                        btn_generate_seedance = gr.Button(
+                            "🌱 영상 생성",
+                            variant="primary",
+                            elem_classes=["generate-btn"],
+                            elem_id="seedance-generate-btn",
+                        )
+
+                        seedance_status = gr.Textbox(
+                            label="상태",
+                            interactive=False,
+                            value="대기 중",
+                        )
+
+                gr.Markdown("### 🎥 생성 결과")
+                gr.Markdown("💡 영상 썸네일 위에 마우스를 올리면 다운로드 버튼이 나타납니다. 여러 개를 선택하려면 왼쪽 위 체크박스를 클릭하세요. 썸네일을 클릭하면 아래 영상 플레이어에서 재생됩니다.")
+
+                with gr.Row():
+                    btn_refresh_seedance = gr.Button("🔄 새로고침", variant="secondary", scale=1)
+                    btn_select_all_seedance = gr.Button("☑️ 전체 선택/해제", variant="secondary", scale=1)
+                    btn_download_single_seedance = gr.Button(
+                        "📥 다운로드 (단일 MP4 / 다중 선택 시 ZIP)",
+                        variant="secondary",
+                        scale=2,
+                        elem_id="btn-download-seedance",
+                    )
+                    btn_delete_seedance = gr.Button(
+                        "🗑️ 선택 삭제",
+                        variant="stop",
+                        scale=1,
+                    )
+
+                seedance_gallery = gr.Gallery(
+                    label="생성된 영상 (Seedance)",
+                    columns=4,
+                    height=600,
+                    object_fit="contain",
+                    value=seedance_video_gallery_state.to_gradio_gallery(),
+                    elem_id="seedance-gallery",
+                )
+
+                seedance_player = gr.Video(
+                    label="선택한 영상 재생",
+                    height=480,
+                    visible=False,
+                )
+
+                seedance_timer = gr.Timer(value=2, active=False)
+                single_video_seedance_output = gr.File(label="MP4 다운로드", elem_id="single-video-seedance")
+                selected_videos_zip_seedance_output = gr.File(label="선택 영상 ZIP 다운로드", elem_id="selected-videos-zip-seedance")
+                ms_state_seedance = gr.Textbox(
+                    value="[]",
+                    elem_id="ms-state-seedance",
+                    interactive=True,
+                )
+                selected_seedance_idx = gr.State(-1)
+                overlay_dl_seedance = gr.Textbox(elem_id="overlay-dl-seedance", interactive=True)
+
+                # ── 설정 저장 핸들러 ────────────────────────────────────────
+                seedance_model_radio.change(_save_gen_setting("seedance_model"), inputs=[seedance_model_radio])
+                seedance_quality_dropdown.change(_save_gen_setting("seedance_quality"), inputs=[seedance_quality_dropdown])
+                seedance_duration_slider.change(_save_gen_setting("seedance_duration"), inputs=[seedance_duration_slider])
+                seedance_ratio_dropdown.change(_save_gen_setting("seedance_ratio"), inputs=[seedance_ratio_dropdown])
+                seedance_prompt_input.change(_save_gen_setting("seedance_prompt"), inputs=[seedance_prompt_input])
+                seedance_audio_checkbox.change(_save_gen_setting("seedance_generate_audio"), inputs=[seedance_audio_checkbox])
+
+                # ── 영상 생성 핸들러 ────────────────────────────────────────
+                unified_seedance_fn = build_unified_seedance_video_fn(gallery_state, seedance_video_gallery_state)
+                btn_generate_seedance.click(
+                    unified_seedance_fn,
+                    inputs=[
+                        seedance_mode_state,
+                        seedance_ref_image,
+                        seedance_start_image,
+                        seedance_end_image,
+                        seedance_prompt_input,
+                        seedance_model_radio,
+                        seedance_duration_slider,
+                        seedance_ratio_dropdown,
+                        seedance_audio_checkbox,
+                        seedance_quality_dropdown,
+                    ],
+                    outputs=[seedance_player, seedance_status],
+                ).then(
+                    lambda: (gr.update(active=True), gr.update(visible=True)),
+                    outputs=[seedance_timer, seedance_player],
+                )
+
+                def on_seedance_gallery_select(evt: gr.SelectData):
+                    idx = evt.index
+                    item = seedance_video_gallery_state.get_item_by_visual_index(idx)
+                    if item is None:
+                        return idx, gr.update(value=None, visible=False)
+                    if _is_safe_output_path(item.video_path) and os.path.exists(item.video_path):
+                        return idx, gr.update(value=item.video_path, visible=True)
+                    return idx, gr.update(value=None, visible=False)
+
+                seedance_gallery.select(
+                    on_seedance_gallery_select,
+                    outputs=[selected_seedance_idx, seedance_player],
+                )
+
+                def poll_seedance_gallery_state():
+                    if not seedance_video_gallery_state.has_pending():
+                        return gr.update(), gr.update(), gr.update(active=False)
+                    return (
+                        seedance_video_gallery_state.to_gradio_gallery(),
+                        seedance_video_gallery_state.get_summary(),
+                        gr.update(),
+                    )
+
+                seedance_timer.tick(poll_seedance_gallery_state, outputs=[seedance_gallery, seedance_status, seedance_timer])
+
+                def refresh_seedance_gallery_fn():
+                    return (
+                        seedance_video_gallery_state.to_gradio_gallery(),
+                        seedance_video_gallery_state.get_summary(),
+                    )
+
+                btn_refresh_seedance.click(
+                    refresh_seedance_gallery_fn,
+                    outputs=[seedance_gallery, seedance_status],
+                )
+
+                def smart_download_seedance(selected_json: str, current_idx: int):
+                    """단일 선택 → MP4, 다중 선택 → ZIP 스마트 다운로드"""
+                    try:
+                        indices = json.loads(selected_json or "[]")
+                    except (json.JSONDecodeError, ValueError):
+                        indices = []
+
+                    if len(indices) > 1:
+                        paths = []
+                        for raw_idx in indices:
+                            try:
+                                item = seedance_video_gallery_state.get_item_by_visual_index(int(raw_idx))
+                                if item and item.video_path and os.path.exists(item.video_path):
+                                    paths.append(item.video_path)
+                            except (ValueError, TypeError):
+                                continue
+                        if not paths:
+                            gr.Warning("선택된 영상 파일을 찾을 수 없습니다.")
+                            return None
+                        return create_zip_from_paths(paths)
+                    elif len(indices) == 1:
+                        try:
+                            item = seedance_video_gallery_state.get_item_by_visual_index(int(indices[0]))
+                        except (ValueError, TypeError):
+                            item = None
+                    else:
+                        item = seedance_video_gallery_state.get_item_by_visual_index(current_idx)
+
+                    if item is None:
+                        gr.Warning("영상을 먼저 클릭하여 선택해주세요.")
+                        return None
+                    if not item.video_path or not os.path.exists(item.video_path):
+                        gr.Warning("영상 파일을 찾을 수 없습니다.")
+                        return None
+                    return item.video_path
+
+                btn_download_single_seedance.click(
+                    smart_download_seedance,
+                    inputs=[ms_state_seedance, selected_seedance_idx],
+                    outputs=[single_video_seedance_output],
+                    js="(ms, idx) => { var wasOv = typeof window.__ovIdx !== 'undefined' && window.__ovIdx >= 0; var oi = wasOv ? window.__ovIdx : idx; window.__ovIdx = -1; return wasOv ? [JSON.stringify([oi]), oi] : [window.__getSelJson('seedance-gallery', ms), oi]; }",
+                )
+
+                def delete_selected_seedance_videos(selected_json: str, current_idx: int):
+                    try:
+                        indices = json.loads(selected_json or "[]")
+                    except (json.JSONDecodeError, ValueError):
+                        indices = []
+                    if not indices and current_idx >= 0:
+                        indices = [current_idx]
+                    if not indices:
+                        gr.Warning("삭제할 영상을 먼저 선택해주세요.")
+                        return (
+                            seedance_video_gallery_state.to_gradio_gallery(),
+                            seedance_video_gallery_state.get_summary(),
+                            "[]",
+                            -1,
+                            gr.update(value=None, visible=False),
+                        )
+
+                    removed_paths = seedance_video_gallery_state.remove_by_visual_indices(
+                        [int(i) for i in indices]
+                    )
+                    for path in removed_paths:
+                        if _is_safe_output_path(path):
+                            try:
+                                if os.path.exists(path):
+                                    os.remove(path)
+                                meta_path = path.replace(".mp4", ".json")
+                                if os.path.exists(meta_path):
+                                    os.remove(meta_path)
+                                thumb = get_video_thumbnail_path(path)
+                                if os.path.exists(thumb):
+                                    os.remove(thumb)
+                            except Exception:
+                                pass
+
+                    deleted_count = len(removed_paths)
+                    return (
+                        seedance_video_gallery_state.to_gradio_gallery(),
+                        seedance_video_gallery_state.get_summary() + f" (🗑️ {deleted_count}개 삭제됨)",
+                        "[]",
+                        -1,
+                        gr.update(value=None, visible=False),
+                    )
+
+                btn_delete_seedance.click(
+                    delete_selected_seedance_videos,
+                    inputs=[ms_state_seedance, selected_seedance_idx],
+                    outputs=[seedance_gallery, seedance_status, ms_state_seedance, selected_seedance_idx, seedance_player],
+                    js="(ms, idx) => [window.__getSelJson('seedance-gallery', ms), idx]",
+                )
+
+                btn_select_all_seedance.click(
+                    fn=None,
+                    js="() => { if (window.__msToggleAll) window.__msToggleAll('seedance-gallery'); }",
+                )
+
+            # ── 탭 5: 갤러리 & 다운로드 ──────────────────────────────────────
             with gr.Tab("📁 갤러리 & 다운로드", id="tab_gallery"):
                 gr.Markdown("### 생성된 이미지 전체 보기 및 다운로드")
 
@@ -2793,12 +3347,30 @@ def build_ui() -> gr.Blocks:
             outputs=[single_video_output],
         )
 
+        # 오버레이 다운로드 버튼 핸들러: Seedance 영상 갤러리 (triggerOverlayAction 경유)
+        def _overlay_download_seedance(val: str):
+            """'idx:timestamp' 형식에서 인덱스를 추출하여 Seedance 영상 경로를 반환합니다."""
+            try:
+                idx = int(val.split(":")[0])
+            except Exception:
+                return None
+            item = seedance_video_gallery_state.get_item_by_visual_index(idx)
+            if item is None or not item.video_path or not os.path.exists(item.video_path):
+                return None
+            return item.video_path
+
+        overlay_dl_seedance.input(
+            _overlay_download_seedance,
+            inputs=[overlay_dl_seedance],
+            outputs=[single_video_seedance_output],
+        )
+
         gr.Markdown(
             """
             ---
             **안내**: 생성된 이미지와 영상은 `outputs/YYYY-MM-DD/` 폴더에 자동 저장됩니다.
             나노 바나나 2와 나노 바나나 프로 모두 레퍼런스 이미지를 지원합니다.
-            Kling 영상 생성은 보통 1~5분 정도 소요됩니다.
+            Kling / Seedance 영상 생성은 보통 1~5분 정도 소요됩니다.
             """
         )
 
