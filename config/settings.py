@@ -67,33 +67,6 @@ KLING_DEFAULT_QUALITY = "720p (Standard)"
 KLING_VIDEO_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
 KLING_DEFAULT_RATIO = "16:9"
 
-# ── Seedance 비디오 모델 (fal.ai REST API 사용) ────────────────────────────────
-
-SEEDANCE_MODELS = {
-    "Seedance 2.0": {
-        "api_name": "bytedance/seedance-2.0",
-        "description": "Seedance 2.0 (고품질)",
-    },
-    "Seedance 2.0 Fast": {
-        "api_name": "bytedance/seedance-2.0/fast",
-        "description": "Seedance 2.0 Fast (빠른 생성, 약간 낮은 품질)",
-    },
-}
-
-SEEDANCE_DURATIONS = list(range(4, 16))  # 4 ~ 15초 (1초 단위)
-SEEDANCE_DEFAULT_DURATION = 5
-SEEDANCE_DEFAULT_MODEL = "Seedance 2.0"
-
-SEEDANCE_QUALITY_OPTIONS = {
-    "720p": "720p",
-    "1080p": "1080p",
-    "480p": "480p",
-}
-SEEDANCE_DEFAULT_QUALITY = "720p"
-
-SEEDANCE_VIDEO_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
-SEEDANCE_DEFAULT_RATIO = "16:9"
-
 # ── 기본값 ─────────────────────────────────────────────────────────────────────
 
 DEFAULT_MODEL = "나노 바나나 2"
